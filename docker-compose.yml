@@ -45,6 +45,7 @@ services:
         condition: service_healthy
     networks:
       - automation_net
+      - proxy-network
 
   # ============================================================================
   # 3. Celery Beat (Periodic Automation Scheduler replacing Cron/n8n triggers)
@@ -187,3 +188,5 @@ volumes:
 networks:
   automation_net:
     driver: bridge
+  proxy-network:
+    external: true

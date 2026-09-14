@@ -520,18 +520,31 @@ class AIExtractor:
         html_lower = html.lower()
 
         # Cloudflare / anti-bot challenges
-        if "cf-browser-verification" in html_lower or "checking your browser" in html_lower or "just a moment..." in html_lower:
+        if any(token in html_lower for token in [
+            "cf-browser-verification",
+            "checking your browser",
+            "just a moment...",
+            "turnstile",
+            "challenge-running",
+            "enable javascript to run this app",
+            "you need to enable javascript to run this app",
+        ]):
             return True
 
-        # Common SPA roots with little or no text
+        # Parse structure
         soup = BeautifulSoup(html, "html.parser")
         body = soup.find("body")
         if not body:
             return True
 
         text_content = body.get_text().strip()
-        # If the body contains less than 250 characters of actual text, it's almost certainly an SPA
-        if len(text_content) < 250:
+        # If the page already has reasonable text or standard content elements, it doesn't need a browser
+        if len(text_content) >= 100:
+            return False
+
+        # If text is very short (< 100 chars), check if it's an empty SPA mount container
+        has_spa_mount = bool(body.find(id=re.compile(r"^(root|app|__next)$", re.I)))
+        if has_spa_mount or len(text_content) < 30:
             return True
 
         return False

@@ -16,12 +16,61 @@ from api.schemas.ai_extract import (
     AIExtractRequest,
     AIExtractResponse,
 )
-from flows.tasks_ai_extract import trigger_batch_ai_extraction
+from flows.tasks_ai_extract import task_ai_extract_url, trigger_batch_ai_extraction
 from scrapers.ai_extractor import extractor
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["AI Web Extractor (LLM Optimized)"])
+
+
+def execute_extraction(
+    url: str,
+    mode: str = "auto",
+    format_type: str = "markdown",
+    include_links: bool = True,
+    include_images: bool = True,
+    wait_for_selector: Optional[str] = None,
+    timeout_seconds: int = 30,
+) -> dict:
+    if mode == "browser":
+        task = task_ai_extract_url.apply_async(
+            kwargs={
+                "url": url,
+                "mode": "browser",
+                "format_type": format_type,
+                "include_links": include_links,
+                "include_images": include_images,
+                "wait_for_selector": wait_for_selector,
+            }
+        )
+        return task.get(timeout=timeout_seconds)
+
+    try:
+        return extractor.extract(
+            url=url,
+            mode=mode,
+            format_type=format_type,
+            include_links=include_links,
+            include_images=include_images,
+            wait_for_selector=wait_for_selector,
+            timeout_seconds=timeout_seconds,
+        )
+    except Exception as e:
+        if mode == "auto":
+            logger.info("Fast extraction in auto mode failed (%s). Delegating to Playwright Celery worker...", e)
+            task = task_ai_extract_url.apply_async(
+                kwargs={
+                    "url": url,
+                    "mode": "browser",
+                    "format_type": format_type,
+                    "include_links": include_links,
+                    "include_images": include_images,
+                    "wait_for_selector": wait_for_selector,
+                }
+            )
+            return task.get(timeout=timeout_seconds)
+        raise e
 
 
 @router.post("/api/v1/extract", response_model=AIExtractResponse)
@@ -32,7 +81,7 @@ def extract_ai_content_post(payload: AIExtractRequest):
     tables, and semantic structure.
     """
     try:
-        data = extractor.extract(
+        data = execute_extraction(
             url=payload.url,
             mode=payload.mode,
             format_type=payload.format,
@@ -90,7 +139,7 @@ def jina_reader_style_endpoint(target_url: str):
         url = "https://" + url
 
     try:
-        data = extractor.extract(url=url, mode="auto", format_type="markdown")
+        data = execute_extraction(url=url, mode="auto", format_type="markdown")
         meta = data["metadata"]
         title = meta.get("title", "")
         desc = meta.get("description", "")
