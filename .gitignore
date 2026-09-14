@@ -1,0 +1,41 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments & Secret configs
+.env
+.env.local
+.venv/
+env/
+venv/
+ENV/
+
+# Celery & Beat state files
+celerybeat-schedule*
+*.pid
+
+# Data and browser profiles
+data/*.db
+data/browser_profile/
+downloads/*
+!downloads/.gitkeep
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs
+*.log
+logs/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db

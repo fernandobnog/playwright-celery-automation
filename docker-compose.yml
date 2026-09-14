@@ -1,0 +1,180 @@
+services:
+  # ============================================================================
+  # 1. Message Broker & Result Backend
+  # ============================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: omniflow_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - automation_net
+
+  # ============================================================================
+  # 2. FastAPI Gateway (Webhooks, Triggers & Task Status)
+  # ============================================================================
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: omniflow_api
+    restart: unless-stopped
+    environment:
+      - SERVICE_TYPE=api
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+      - shared_data:/app/data
+      - downloads:/app/downloads
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - automation_net
+
+  # ============================================================================
+  # 3. Celery Beat (Periodic Automation Scheduler replacing Cron/n8n triggers)
+  # ============================================================================
+  celery-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: omniflow_beat
+    restart: unless-stopped
+    environment:
+      - SERVICE_TYPE=beat
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    volumes:
+      - .:/app
+      - shared_data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - automation_net
+
+  # ============================================================================
+  # 4. Scraping Worker 1 (Autonomous with Xvfb + noVNC on Port 6081)
+  # ============================================================================
+  worker-1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: omniflow_worker_1
+    restart: unless-stopped
+    environment:
+      - SERVICE_TYPE=worker
+      - CELERY_WORKER_NAME=worker-1
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - PLAYWRIGHT_HEADLESS=false
+      - PLAYWRIGHT_USER_DATA_DIR=/app/data/browser_profile
+      - DISPLAY=:99
+      - XVFB_RESOLUTION=1920x1080x24
+      - VNC_PORT=5900
+      - NOVNC_PORT=6080
+      - HOST_NOVNC_PORT=6081
+      - CELERY_CONCURRENCY=2
+    ports:
+      - "6081:6080" # noVNC live visual streaming for Worker 1
+    volumes:
+      - .:/app
+      - shared_data:/app/data
+      - worker1_profile:/app/data/browser_profile # Persistent independent cookies/session
+      - downloads:/app/downloads
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - automation_net
+
+  # ============================================================================
+  # 5. Scraping Worker 2 (Autonomous with Xvfb + noVNC on Port 6082)
+  # ============================================================================
+  worker-2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: omniflow_worker_2
+    restart: unless-stopped
+    environment:
+      - SERVICE_TYPE=worker
+      - CELERY_WORKER_NAME=worker-2
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - PLAYWRIGHT_HEADLESS=false
+      - PLAYWRIGHT_USER_DATA_DIR=/app/data/browser_profile
+      - DISPLAY=:99
+      - XVFB_RESOLUTION=1920x1080x24
+      - VNC_PORT=5900
+      - NOVNC_PORT=6080
+      - HOST_NOVNC_PORT=6082
+      - CELERY_CONCURRENCY=2
+    ports:
+      - "6082:6080" # noVNC live visual streaming for Worker 2
+    volumes:
+      - .:/app
+      - shared_data:/app/data
+      - worker2_profile:/app/data/browser_profile # Persistent independent cookies/session
+      - downloads:/app/downloads
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - automation_net
+
+  # ============================================================================
+  # 6. Celery Flower (Real-time task monitoring dashboard)
+  # ============================================================================
+  flower:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: omniflow_flower
+    restart: unless-stopped
+    environment:
+      - SERVICE_TYPE=flower
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    ports:
+      - "5555:5555"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - automation_net
+
+# ==============================================================================
+# Persistent Named Volumes
+# ==============================================================================
+volumes:
+  redis_data:
+    driver: local
+  shared_data:
+    driver: local
+  worker1_profile:
+    driver: local
+  worker2_profile:
+    driver: local
+  downloads:
+    driver: local
+
+# ==============================================================================
+# Isolated Internal Network
+# ==============================================================================
+networks:
+  automation_net:
+    driver: bridge

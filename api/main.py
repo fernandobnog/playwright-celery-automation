@@ -1,0 +1,111 @@
+"""
+FastAPI Application Gateway.
+Provides REST endpoints for triggering workflows, monitoring tasks,
+receiving webhooks, and visual browser streaming.
+"""
+
+import logging
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from redis import Redis
+
+from api.routes import flows_router, tasks_router, webhooks_router
+from core.celery_app import celery_app
+from core.config import settings
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("FastAPI Gateway initialized. Connecting to Redis: %s", settings.REDIS_URL)
+    yield
+    logger.info("FastAPI Gateway shutting down.")
+
+
+app = FastAPI(
+    title="Omni-Flow Scraping & Automation Gateway",
+    description=(
+        "Enterprise-grade Python automation orchestrator replacing no-code tools (n8n). "
+        "Features Playwright scraping with persistent profiles, anti-bot stealth, "
+        "virtual displays via noVNC, and Celery Canvas pipelines."
+    ),
+    version="1.0.0",
+    lifespan=lifespan,
+    docs_url="/docs",
+    redoc_url="/redoc",
+)
+
+# Enable CORS for frontend integrations
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Register routers under /api/v1
+app.include_router(flows_router, prefix="/api/v1")
+app.include_router(tasks_router, prefix="/api/v1")
+app.include_router(webhooks_router, prefix="/api/v1")
+
+
+@app.get("/", tags=["General"])
+def root(request: Request):
+    host = request.base_url.hostname or "localhost"
+    return {
+        "name": "Omni-Flow Scraping & Automation Platform",
+        "status": "ONLINE",
+        "documentation": "/docs",
+        "vnc_live_streams": {
+            "worker_1": f"http://{host}:6081/vnc.html?autoconnect=true",
+            "worker_2": f"http://{host}:6082/vnc.html?autoconnect=true",
+        },
+        "monitoring": {
+            "celery_flower": f"http://{host}:5555",
+        },
+    }
+
+
+@app.get("/health", tags=["Health"])
+def health():
+    """Health check validating Redis connection and Celery worker availability."""
+    redis_healthy = False
+    active_workers = []
+
+    try:
+        r = Redis.from_url(settings.REDIS_URL, socket_timeout=2)
+        redis_healthy = bool(r.ping())
+    except Exception as e:
+        logger.warning("Redis health check failed: %s", e)
+
+    try:
+        inspector = celery_app.control.inspect(timeout=1.0)
+        active = inspector.ping()
+        if active:
+            active_workers = list(active.keys())
+    except Exception as e:
+        logger.warning("Celery inspect ping failed: %s", e)
+
+    return {
+        "status": "HEALTHY" if redis_healthy else "DEGRADED",
+        "redis_connected": redis_healthy,
+        "active_celery_workers": active_workers,
+    }
+
+
+@app.get("/api/v1/vnc-info", tags=["Monitoring"])
+def vnc_info(request: Request):
+    """Direct links to the real-time visual streaming of each scraping worker."""
+    host = request.base_url.hostname or "localhost"
+    return {
+        "description": "Access these URLs directly in your browser to view the Chromium browser in real-time.",
+        "worker_1_novnc": f"http://{host}:6081/vnc.html?autoconnect=true",
+        "worker_2_novnc": f"http://{host}:6082/vnc.html?autoconnect=true",
+    }

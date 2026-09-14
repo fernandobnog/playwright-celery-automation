@@ -1,0 +1,157 @@
+"""
+Persistent SQLite repository for recording flow executions,
+scraped items, and webhook dispatch logs.
+"""
+
+import json
+import logging
+import sqlite3
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from core.config import settings
+
+logger = logging.getLogger(__name__)
+
+
+class PipelineRepository:
+    """
+    Thread-safe SQLite storage for workflow logs and scraped entities.
+    """
+
+    def __init__(self, db_path: Optional[str] = None):
+        if db_path is None:
+            # Parse sqlite:/// url or use default data dir
+            raw_url = settings.DATABASE_URL.replace("sqlite:///", "")
+            self.db_path = Path(raw_url)
+        else:
+            self.db_path = Path(db_path)
+
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._init_db()
+
+    def _get_connection(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(str(self.db_path), timeout=20.0)
+        conn.row_factory = sqlite3.Row
+        # Enable WAL mode for high concurrency
+        conn.execute("PRAGMA journal_mode=WAL;")
+        return conn
+
+    def _init_db(self):
+        """Initializes tables if they do not exist."""
+        with self._get_connection() as conn:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS scraped_items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id TEXT,
+                    source_url TEXT,
+                    quote TEXT,
+                    author TEXT,
+                    tags TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS flow_executions (
+                    task_id TEXT PRIMARY KEY,
+                    flow_name TEXT,
+                    status TEXT,
+                    input_payload TEXT,
+                    output_payload TEXT,
+                    error_message TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS webhook_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id TEXT,
+                    webhook_url TEXT,
+                    status_code INTEGER,
+                    response_body TEXT,
+                    is_success BOOLEAN,
+                    dispatched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            conn.commit()
+
+    def save_scraped_items(self, task_id: str, source_url: str, items: List[Dict[str, Any]]):
+        """Inserts a batch of scraped items."""
+        with self._get_connection() as conn:
+            for item in items:
+                tags_str = json.dumps(item.get("tags", []))
+                conn.execute(
+                    """
+                    INSERT INTO scraped_items (task_id, source_url, quote, author, tags)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        task_id,
+                        source_url,
+                        item.get("quote"),
+                        item.get("author"),
+                        tags_str,
+                    ),
+                )
+            conn.commit()
+            logger.info("Saved %d items for task %s", len(items), task_id)
+
+    def log_flow_start(self, task_id: str, flow_name: str, input_payload: Dict[str, Any]):
+        """Logs the initialization of a workflow."""
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO flow_executions (task_id, flow_name, status, input_payload, updated_at)
+                VALUES (?, ?, 'STARTED', ?, CURRENT_TIMESTAMP)
+                """,
+                (task_id, flow_name, json.dumps(input_payload)),
+            )
+            conn.commit()
+
+    def log_flow_complete(self, task_id: str, output_payload: Dict[str, Any]):
+        """Marks a workflow as completed."""
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                UPDATE flow_executions
+                SET status = 'SUCCESS', output_payload = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE task_id = ?
+                """,
+                (json.dumps(output_payload), task_id),
+            )
+            conn.commit()
+
+    def log_flow_error(self, task_id: str, error_message: str):
+        """Marks a workflow as failed with error details."""
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                UPDATE flow_executions
+                SET status = 'FAILURE', error_message = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE task_id = ?
+                """,
+                (error_message, task_id),
+            )
+            conn.commit()
+
+    def log_webhook_dispatch(
+        self,
+        task_id: str,
+        webhook_url: str,
+        status_code: int,
+        response_body: str,
+        is_success: bool,
+    ):
+        """Records webhook dispatch attempt."""
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO webhook_logs (task_id, webhook_url, status_code, response_body, is_success)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (task_id, webhook_url, status_code, response_body, is_success),
+            )
+            conn.commit()
+
+
+repo = PipelineRepository()
