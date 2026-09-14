@@ -181,7 +181,7 @@ def task_dispatch_webhook(
     logger.info("[%s] Starting webhook dispatch step. Destination: %s", task_id, webhook_url)
 
     # If no external webhook URL was specified, simulate local mock dispatch
-    target_url = webhook_url or f"http://{settings.API_HOST}:{settings.API_PORT}/api/v1/webhooks/incoming"
+    target_url = webhook_url or f"http://api:{settings.API_PORT}/api/v1/webhooks/incoming"
 
     summary_payload = {
         "event": "scraper.pipeline.completed",

@@ -66,7 +66,14 @@ celery_app.conf.update(
             "options": {"queue": "default"},
         },
     },
+    imports=[
+        "flows.tasks",
+        "flows.tasks_etl",
+        "flows.tasks_ai_extract",
+        "flows.example_flow",
+        "flows.parallel_flow",
+    ],
 )
 
 # Auto-discover tasks in packages
-celery_app.autodiscover_tasks(["flows", "scrapers"])
+celery_app.autodiscover_tasks(["flows"])

@@ -5,6 +5,9 @@ echo "=== [Omni-Flow Container Initializing] ==="
 echo "Service Type: ${SERVICE_TYPE:-default}"
 echo "Hostname: $(hostname)"
 
+export PYTHONPATH="/app:${PYTHONPATH}"
+cd /app
+
 # Wait for Redis broker to be ready
 wait_for_redis() {
   echo "Waiting for Redis broker at ${REDIS_URL:-redis://redis:6379/0}..."
