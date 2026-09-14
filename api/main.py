@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from redis import Redis
 
-from api.routes import flows_router, tasks_router, webhooks_router
+from api.routes import ai_extract_router, flows_router, tasks_router, webhooks_router
 from core.celery_app import celery_app
 from core.config import settings
 
@@ -29,13 +29,13 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Omni-Flow Scraping & Automation Gateway",
+    title="Omni-Flow Scraping & AI Content Extraction Gateway",
     description=(
-        "Enterprise-grade Python automation orchestrator replacing no-code tools (n8n). "
-        "Features Playwright scraping with persistent profiles, anti-bot stealth, "
-        "virtual displays via noVNC, and Celery Canvas pipelines."
+        "Enterprise-grade Python automation orchestrator and AI Web Reader. "
+        "Transforms any website into clean LLM-optimized Markdown with token metrics, "
+        "anti-bot stealth, virtual displays via noVNC, and distributed Celery Canvas pipelines."
     ),
-    version="1.0.0",
+    version="1.1.0",
     lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc",
@@ -50,7 +50,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Register routers under /api/v1
+# Register routers
+app.include_router(ai_extract_router)
 app.include_router(flows_router, prefix="/api/v1")
 app.include_router(tasks_router, prefix="/api/v1")
 app.include_router(webhooks_router, prefix="/api/v1")
@@ -60,9 +61,10 @@ app.include_router(webhooks_router, prefix="/api/v1")
 def root(request: Request):
     host = request.base_url.hostname or "localhost"
     return {
-        "name": "Omni-Flow Scraping & Automation Platform",
+        "name": "Omni-Flow Scraping & AI Content Extractor",
         "status": "ONLINE",
         "documentation": "/docs",
+        "ai_reader_example": f"http://{host}:8000/r/https://github.com/torvalds/linux",
         "vnc_live_streams": {
             "worker_1": f"http://{host}:6081/vnc.html?autoconnect=true",
             "worker_2": f"http://{host}:6082/vnc.html?autoconnect=true",

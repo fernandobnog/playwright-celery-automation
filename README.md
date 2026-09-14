@@ -22,6 +22,7 @@
   - [2. Anti-Detecção e Comportamento Humano](#2-anti-detecção-e-comportamento-humano)
   - [3. Streaming Visual em Tempo Real (Xvfb + noVNC)](#3-streaming-visual-em-tempo-real-xvfb--novnc)
   - [4. Persistência de Sessão Isolada](#4-persistência-de-sessão-isolada)
+- [🤖 Leitor Web para IA (Alternativa ao Firecrawl e Jina Reader)](#-leitor-web-para-ia-alternativa-ao-firecrawl-e-jina-reader)
 - [Matriz de Portas e Serviços](#-matriz-de-portas-e-serviços)
 - [Guia de Inicialização Rápida](#-guia-de-inicialização-rápida)
 - [Como Testar e Disparar Fluxos](#-como-testar-e-disparar-fluxos)
@@ -244,6 +245,82 @@ Ao acessar a porta correspondente no seu navegador, você vê a tela completa do
   * Worker 1: `worker1_profile:/app/data/browser_profile`
   * Worker 2: `worker2_profile:/app/data/browser_profile`
 - Os cookies, sessões de autenticação, cache local e LocalStorage são mantidos entre tarefas, evitando bloqueios por login frequente e permitindo fluxos contínuos.
+
+---
+
+## 🤖 Leitor Web para IA (Alternativa ao Firecrawl e Jina Reader)
+
+O Omni-Flow possui um mecanismo nativo capaz de acessar **qualquer site** e retornar o conteúdo limpo, estruturado e **100% otimizado para LLMs e Agentes de IA** (como GPT-4, Claude, Gemini e Llama).
+
+### O que o extrator faz:
+1. **Eliminação de Ruído:** Remove anúncios, barras de navegação, rodapés, banners de cookies/GDPR, scripts, estilos, iframes e popups.
+2. **Preservação Semântica:** Mantém a hierarquia de títulos (`#`, `##`), listas, blocos de código com linguagem identificada, citações e converte tabelas HTML em tabelas Markdown legíveis.
+3. **Limpeza de Links:** Preserva links úteis mas remove parâmetros de rastreamento (`utm_source`, `fbclid`, etc.) economizando tokens no contexto da IA.
+4. **Métricas de Contexto:** Devolve estimativa exata de tokens (`tokens_estimated`), contagem de palavras e metadados completos (título, autor, data de publicação, descrição).
+5. **Dual Engine Resiliente (`mode: auto`):** Tenta requisição rápida HTTP; se detectar páginas em JavaScript (SPAs como React, Next.js, Vue) ou proteções anti-bot, chaveia automaticamente para o Playwright Chromium com Stealth!
+
+### 📌 Exemplos de Uso:
+
+#### 1. Atalho Direto Estilo Jina Reader (`/r/{url}`)
+Basta passar a URL e receber Markdown puro diretamente no corpo da resposta:
+```bash
+curl "http://localhost:8000/r/https://github.com/torvalds/linux"
+```
+
+#### 2. Extração Estruturada via JSON (`POST /api/v1/extract`)
+```bash
+curl -X POST "http://localhost:8000/api/v1/extract" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "url": "https://pt.wikipedia.org/wiki/Intelig%C3%AAncia_artificial",
+       "mode": "auto",
+       "format": "markdown",
+       "include_links": true
+     }'
+```
+
+**Exemplo de Resposta:**
+```json
+{
+  "status": "success",
+  "url": "https://pt.wikipedia.org/wiki/Intelig%C3%AAncia_artificial",
+  "mode_used": "fast",
+  "tokens_estimated": 3840,
+  "word_count": 2910,
+  "reading_time_minutes": 14.5,
+  "metadata": {
+    "title": "Inteligência artificial – Wikipédia, a enciclopédia livre",
+    "description": "A inteligência artificial (IA) é um campo da ciência da computação...",
+    "author": null,
+    "published_time": null,
+    "language": "pt",
+    "canonical_url": "https://pt.wikipedia.org/wiki/Intelig%C3%AAncia_artificial",
+    "domain": "pt.wikipedia.org"
+  },
+  "content": "# Inteligência artificial\n\nInteligência artificial (por vezes mencionada pela sigla em inglês AI)...",
+  "links": [
+    {
+      "text": "ciência da computação",
+      "url": "https://pt.wikipedia.org/wiki/Ci%C3%AAncia_da_computa%C3%A7%C3%A3o"
+    }
+  ]
+}
+```
+
+#### 3. Extração em Lote Paralela via Celery (`POST /api/v1/extract/batch`)
+Distribui uma lista de dezenas ou centenas de links pelos workers para extração assíncrona concorrente:
+```bash
+curl -X POST "http://localhost:8000/api/v1/extract/batch" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "urls": [
+         "https://en.wikipedia.org/wiki/Python_(programming_language)",
+         "https://en.wikipedia.org/wiki/FastAPI",
+         "https://en.wikipedia.org/wiki/Celery_(software)"
+       ],
+       "mode": "auto"
+     }'
+```
 
 ---
 
