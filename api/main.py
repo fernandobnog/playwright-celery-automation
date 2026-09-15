@@ -10,7 +10,13 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from redis import Redis
 
-from api.routes import ai_extract_router, flows_router, tasks_router, webhooks_router
+from api.routes import (
+    ai_extract_router,
+    flows_router,
+    google_search_router,
+    tasks_router,
+    webhooks_router,
+)
 from core.celery_app import celery_app
 from core.config import settings
 from core.security import (
@@ -95,6 +101,10 @@ app.include_router(
 app.include_router(
     webhooks_router,
     prefix="/api/v1",
+    dependencies=[Depends(verify_internal_api_key)],
+)
+app.include_router(
+    google_search_router,
     dependencies=[Depends(verify_internal_api_key)],
 )
 

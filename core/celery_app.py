@@ -50,6 +50,8 @@ celery_app.conf.update(
         "flows.tasks_etl.task_persist_quotes": {"queue": "flows"},
         "flows.tasks_etl.task_dispatch_webhook": {"queue": "flows"},
         "flows.tasks_etl.task_flow_failure_handler": {"queue": "flows"},
+        "flows.tasks_ai_extract.task_ai_extract_url": {"queue": "scraping"},
+        "flows.tasks_google_search.task_google_search": {"queue": "scraping"},
     },
 
     # Beat Periodic Schedules (Automations replacing n8n scheduled triggers)
@@ -70,6 +72,7 @@ celery_app.conf.update(
         "flows.tasks",
         "flows.tasks_etl",
         "flows.tasks_ai_extract",
+        "flows.tasks_google_search",
         "flows.example_flow",
         "flows.parallel_flow",
     ],
