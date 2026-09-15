@@ -3,10 +3,11 @@ Base Playwright Scraper with persistent context, stealth injection,
 and lifecycle management.
 """
 
+import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 from playwright.sync_api import BrowserContext, Page, sync_playwright
 
@@ -40,8 +41,35 @@ class BasePlaywrightScraper:
 
         self._playwright = None
         self._context: Optional[BrowserContext] = None
-        self.viewport = get_random_viewport()
-        self.user_agent = get_random_user_agent()
+        self.viewport, self.user_agent = self._load_or_create_identity()
+
+    def _load_or_create_identity(self) -> Tuple[dict, str]:
+        """
+        Maintains persistent persona fingerprinting (User-Agent and Viewport)
+        for this profile directory. Ensures cookies (such as Cloudflare cf_clearance)
+        and accumulated history correlate with the same consistent device identity,
+        reproducing an authentic human browsing fingerprint.
+        """
+        meta_file = Path(self.user_data_dir) / "profile_identity.json"
+        if meta_file.exists():
+            try:
+                with open(meta_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if "viewport" in data and "user_agent" in data:
+                        return data["viewport"], data["user_agent"]
+            except Exception as e:
+                logger.warning("Could not read profile_identity.json: %s", e)
+
+        viewport = get_random_viewport()
+        user_agent = get_random_user_agent()
+        try:
+            Path(self.user_data_dir).mkdir(parents=True, exist_ok=True)
+            with open(meta_file, "w", encoding="utf-8") as f:
+                json.dump({"viewport": viewport, "user_agent": user_agent}, f, indent=2)
+        except Exception as e:
+            logger.warning("Could not save profile_identity.json: %s", e)
+
+        return viewport, user_agent
 
     def __enter__(self):
         self.start()
@@ -53,9 +81,10 @@ class BasePlaywrightScraper:
     def start(self) -> BrowserContext:
         """Initializes Playwright and launches a persistent browser context."""
         logger.info(
-            "Launching Chromium persistent context. Data dir: %s, Headless: %s",
+            "Launching Chromium persistent context. Data dir: %s, Headless: %s, User-Agent: %s",
             self.user_data_dir,
             self.headless,
+            self.user_agent,
         )
 
         Path(self.user_data_dir).mkdir(parents=True, exist_ok=True)
@@ -78,6 +107,8 @@ class BasePlaywrightScraper:
             headless=self.headless,
             viewport=self.viewport,
             user_agent=self.user_agent,
+            locale="pt-BR",
+            timezone_id="America/Sao_Paulo",
             args=launch_args,
             ignore_default_args=["--enable-automation"],
             accept_downloads=True,
