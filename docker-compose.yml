@@ -34,7 +34,7 @@ services:
       - API_HOST=0.0.0.0
       - API_PORT=8000
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - .:/app
       - ./entrypoint.sh:/entrypoint.sh:ro
@@ -95,7 +95,7 @@ services:
       - HOST_NOVNC_PORT=6081
       - CELERY_CONCURRENCY=2
     ports:
-      - "6081:6080" # noVNC live visual streaming for Worker 1
+      - "127.0.0.1:6081:6080" # noVNC live visual streaming for Worker 1 (Localhost / SSH tunnel only)
     volumes:
       - .:/app
       - ./entrypoint.sh:/entrypoint.sh:ro
@@ -132,7 +132,7 @@ services:
       - HOST_NOVNC_PORT=6082
       - CELERY_CONCURRENCY=2
     ports:
-      - "6082:6080" # noVNC live visual streaming for Worker 2
+      - "127.0.0.1:6082:6080" # noVNC live visual streaming for Worker 2 (Localhost / SSH tunnel only)
     volumes:
       - .:/app
       - ./entrypoint.sh:/entrypoint.sh:ro
@@ -159,8 +159,9 @@ services:
       - PYTHONPATH=/app
       - REDIS_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - FLOWER_BASIC_AUTH=${FLOWER_BASIC_AUTH:-}
     ports:
-      - "5555:5555"
+      - "127.0.0.1:5555:5555"
     depends_on:
       redis:
         condition: service_healthy

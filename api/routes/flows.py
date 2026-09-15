@@ -4,6 +4,7 @@ API Routes for triggering automation flows.
 
 from fastapi import APIRouter, HTTPException, Request
 from api.schemas.requests import FlowTriggerResponse, ParallelETLRequest, QuoteETLRequest
+from core.security import validate_url_for_ssrf
 from flows.example_flow import trigger_quote_etl_flow
 from flows.parallel_flow import trigger_parallel_crawl_flow
 
@@ -28,6 +29,10 @@ def trigger_quote_flow(payload: QuoteETLRequest, request: Request):
     4. Outbound Webhook dispatch with exponential backoff retries.
     """
     try:
+        validate_url_for_ssrf(payload.source_url, allow_internal_containers=False)
+        if payload.webhook_url:
+            validate_url_for_ssrf(payload.webhook_url, allow_internal_containers=True)
+
         async_result = trigger_quote_etl_flow(
             source_url=payload.source_url,
             tag=payload.tag,
@@ -43,6 +48,8 @@ def trigger_quote_flow(payload: QuoteETLRequest, request: Request):
             status_url=f"/api/v1/tasks/{async_result.id}",
             vnc_urls=get_vnc_links(request),
         )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to trigger flow: {e}")
 
@@ -54,6 +61,9 @@ def trigger_parallel_flow(payload: ParallelETLRequest, request: Request):
     Distributes page scraping across both worker-1 and worker-2 concurrently.
     """
     try:
+        if payload.webhook_url:
+            validate_url_for_ssrf(payload.webhook_url, allow_internal_containers=True)
+
         chord_result = trigger_parallel_crawl_flow(
             pages=payload.pages,
             webhook_url=payload.webhook_url,
@@ -67,5 +77,7 @@ def trigger_parallel_flow(payload: ParallelETLRequest, request: Request):
             status_url=f"/api/v1/tasks/{chord_result.id}",
             vnc_urls=get_vnc_links(request),
         )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to dispatch parallel flow: {e}")

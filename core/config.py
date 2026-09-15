@@ -42,6 +42,21 @@ class Settings(BaseSettings):
     WEBHOOK_RETRY_MAX: int = 3
     WEBHOOK_TIMEOUT: int = 15
 
+    # Security & Zero-Trust Container Isolation
+    INTERNAL_API_KEY: str | None = None
+    REQUIRE_API_KEY: bool = True
+    ENFORCE_INTERNAL_IP_ONLY: bool = True
+    ALLOWED_CIDRS: str = "127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+    ENABLE_SSRF_PROTECTION: bool = True
+    MAX_REQUEST_SIZE_BYTES: int = 5 * 1024 * 1024  # 5MB
+    FLOWER_BASIC_AUTH: str | None = None
+
+    @property
+    def allowed_cidrs_list(self) -> list[str]:
+        if not self.ALLOWED_CIDRS:
+            return []
+        return [c.strip() for c in self.ALLOWED_CIDRS.split(",") if c.strip()]
+
     @property
     def downloads_path(self) -> Path:
         p = Path(self.DOWNLOADS_DIR)

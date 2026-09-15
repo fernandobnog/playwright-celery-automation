@@ -6,13 +6,19 @@ receiving webhooks, and visual browser streaming.
 
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from redis import Redis
 
 from api.routes import ai_extract_router, flows_router, tasks_router, webhooks_router
 from core.celery_app import celery_app
 from core.config import settings
+from core.security import (
+    InternalNetworkMiddleware,
+    RequestSizeLimitMiddleware,
+    SecurityHeadersMiddleware,
+    verify_internal_api_key,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -24,6 +30,10 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("FastAPI Gateway initialized. Connecting to Redis: %s", settings.REDIS_URL)
+    logger.info("Security Mode: Zero-Trust Container Auth (API Key: %s, Anti-SSRF: %s, Internal IP Filter: %s)",
+                "ENABLED" if settings.REQUIRE_API_KEY else "DISABLED",
+                "ENABLED" if settings.ENABLE_SSRF_PROTECTION else "DISABLED",
+                "ENABLED" if settings.ENFORCE_INTERNAL_IP_ONLY else "DISABLED")
     yield
     logger.info("FastAPI Gateway shutting down.")
 
@@ -33,15 +43,32 @@ app = FastAPI(
     description=(
         "Enterprise-grade Python automation orchestrator and AI Web Reader. "
         "Transforms any website into clean LLM-optimized Markdown with token metrics, "
-        "anti-bot stealth, virtual displays via noVNC, and distributed Celery Canvas pipelines."
+        "anti-bot stealth, virtual displays via noVNC, and distributed Celery Canvas pipelines. "
+        "Secured for zero-trust internal container-to-container communication."
     ),
-    version="1.1.0",
+    version="1.2.0",
     lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc",
 )
 
-# Enable CORS for frontend integrations
+# 1. Security Headers & Server Identity Masking
+app.add_middleware(SecurityHeadersMiddleware)
+
+# 2. Maximum Payload Size Limiter (DoS Protection)
+app.add_middleware(
+    RequestSizeLimitMiddleware,
+    max_size_bytes=settings.MAX_REQUEST_SIZE_BYTES,
+)
+
+# 3. Restrict Access to Internal Docker Networks and Localhost (Defense-in-depth)
+app.add_middleware(
+    InternalNetworkMiddleware,
+    allowed_cidrs=settings.allowed_cidrs_list,
+    enabled=settings.ENFORCE_INTERNAL_IP_ONLY,
+)
+
+# 4. CORS Middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -50,14 +77,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Register routers
-app.include_router(ai_extract_router)
-app.include_router(flows_router, prefix="/api/v1")
-app.include_router(tasks_router, prefix="/api/v1")
-app.include_router(webhooks_router, prefix="/api/v1")
+# Register routers with Zero-Trust Container API Key Authentication
+app.include_router(
+    ai_extract_router,
+    dependencies=[Depends(verify_internal_api_key)],
+)
+app.include_router(
+    flows_router,
+    prefix="/api/v1",
+    dependencies=[Depends(verify_internal_api_key)],
+)
+app.include_router(
+    tasks_router,
+    prefix="/api/v1",
+    dependencies=[Depends(verify_internal_api_key)],
+)
+app.include_router(
+    webhooks_router,
+    prefix="/api/v1",
+    dependencies=[Depends(verify_internal_api_key)],
+)
 
 
-@app.get("/", tags=["General"])
+@app.get("/", tags=["General"], dependencies=[Depends(verify_internal_api_key)])
 def root(request: Request):
     host = request.base_url.hostname or "localhost"
     return {
@@ -102,7 +144,7 @@ def health():
     }
 
 
-@app.get("/api/v1/vnc-info", tags=["Monitoring"])
+@app.get("/api/v1/vnc-info", tags=["Monitoring"], dependencies=[Depends(verify_internal_api_key)])
 def vnc_info(request: Request):
     """Direct links to the real-time visual streaming of each scraping worker."""
     host = request.base_url.hostname or "localhost"

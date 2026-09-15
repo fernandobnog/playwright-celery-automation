@@ -9,13 +9,14 @@ Features:
 
 import logging
 from typing import Literal, Optional
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from api.schemas.ai_extract import (
     AIBatchExtractRequest,
     AIExtractMetadata,
     AIExtractRequest,
     AIExtractResponse,
 )
+from core.security import validate_url_for_ssrf
 from core.utils import normalize_url
 from flows.tasks_ai_extract import task_ai_extract_url, trigger_batch_ai_extraction
 from scrapers.ai_extractor import extractor
@@ -34,6 +35,9 @@ def execute_extraction(
     wait_for_selector: Optional[str] = None,
     timeout_seconds: int = 30,
 ) -> dict:
+    # Anti-SSRF Protection check
+    validate_url_for_ssrf(url)
+
     if mode == "browser":
         task = task_ai_extract_url.apply_async(
             kwargs={
@@ -102,6 +106,8 @@ def extract_ai_content_post(payload: AIExtractRequest):
             content=data["content"],
             links=data["links"],
         )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error("Extraction error for URL %s: %s", payload.url, e)
         raise HTTPException(status_code=500, detail=f"Failed to extract content: {e}")
@@ -127,15 +133,23 @@ def extract_ai_content_get(
 
 
 @router.get("/r/{target_url:path}")
-def jina_reader_style_endpoint(target_url: str):
+def jina_reader_style_endpoint(target_url: str, request: Request):
     """
     Direct Raw Markdown Reader (Drop-in replacement for r.jina.ai).
     Usage:
-      curl http://localhost:8000/r/https://en.wikipedia.org/wiki/Artificial_intelligence
+      curl http://omniflow_api:8000/r/example.com -H "X-API-Key: YOUR_KEY"
+      curl http://omniflow_api:8000/r/example.com?api_key=YOUR_KEY
     Returns pure text/markdown directly in response body for zero-friction LLM prompting.
     """
     # Normalize URL (handles bare domains, subdomains, collapsed slashes)
     url = normalize_url(target_url)
+
+    # Reconstruct query parameters intended for target site (excluding api_key used for auth)
+    target_params = {k: v for k, v in request.query_params.items() if k != "api_key"}
+    if target_params:
+        from urllib.parse import urlencode
+        qs = urlencode(target_params)
+        url = f"{url}?{qs}" if "?" not in url else f"{url}&{qs}"
 
     try:
         data = execute_extraction(url=url, mode="auto", format_type="markdown")
@@ -150,6 +164,8 @@ def jina_reader_style_endpoint(target_url: str):
 
         full_markdown = header + data["content"]
         return Response(content=full_markdown, media_type="text/markdown; charset=utf-8")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read URL: {e}")
 
@@ -161,6 +177,11 @@ def extract_batch(payload: AIBatchExtractRequest):
     Returns task ID to monitor progress.
     """
     try:
+        for u in payload.urls:
+            validate_url_for_ssrf(u)
+        if payload.webhook_url:
+            validate_url_for_ssrf(payload.webhook_url, allow_internal_containers=True)
+
         chord_res = trigger_batch_ai_extraction(
             urls=payload.urls,
             mode=payload.mode,
@@ -172,5 +193,7 @@ def extract_batch(payload: AIBatchExtractRequest):
             "total_urls": len(payload.urls),
             "status_url": f"/api/v1/tasks/{chord_res.id}",
         }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to enqueue batch extraction: {e}")

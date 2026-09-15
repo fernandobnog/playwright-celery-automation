@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 import httpx
 from bs4 import BeautifulSoup, Comment, NavigableString, Tag
 
+from core.security import validate_url_for_ssrf
 from core.utils import normalize_url
 from scrapers.base import BasePlaywrightScraper
 from scrapers.humanizer import human_scroll, human_sleep
@@ -388,6 +389,7 @@ class AIExtractor:
         Extracts and converts website content into AI-optimized Markdown.
         """
         url = normalize_url(url)
+        validate_url_for_ssrf(url)
         logger.info("Extracting AI content from URL: %s (mode=%s)", url, mode)
         html = ""
         mode_used = "fast"
@@ -490,7 +492,19 @@ class AIExtractor:
             "Sec-Fetch-Site": "none",
             "Upgrade-Insecure-Requests": "1",
         }
-        with httpx.Client(follow_redirects=True, timeout=timeout, headers=headers) as client:
+        def _on_redirect(response: httpx.Response):
+            if response.is_redirect:
+                location = response.headers.get("Location")
+                if location:
+                    redirect_target = str(response.url.join(location))
+                    validate_url_for_ssrf(redirect_target)
+
+        with httpx.Client(
+            follow_redirects=True,
+            timeout=timeout,
+            headers=headers,
+            event_hooks={"response": [_on_redirect]},
+        ) as client:
             resp = client.get(url)
             resp.raise_for_status()
             return resp.text

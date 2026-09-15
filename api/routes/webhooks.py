@@ -27,6 +27,13 @@ def receive_external_webhook(payload: IncomingWebhookPayload):
         tag = payload.payload.get("tag")
         limit = payload.payload.get("max_items", 5)
         callback = payload.payload.get("webhook_url")
+        if callback:
+            from core.security import validate_url_for_ssrf
+            try:
+                validate_url_for_ssrf(callback, allow_internal_containers=True)
+            except ValueError as e:
+                from fastapi import HTTPException
+                raise HTTPException(status_code=400, detail=str(e))
 
         async_result = trigger_quote_etl_flow(
             tag=tag,
