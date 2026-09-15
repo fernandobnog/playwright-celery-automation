@@ -16,6 +16,7 @@ from api.schemas.ai_extract import (
     AIExtractRequest,
     AIExtractResponse,
 )
+from core.utils import normalize_url
 from flows.tasks_ai_extract import task_ai_extract_url, trigger_batch_ai_extraction
 from scrapers.ai_extractor import extractor
 
@@ -133,10 +134,8 @@ def jina_reader_style_endpoint(target_url: str):
       curl http://localhost:8000/r/https://en.wikipedia.org/wiki/Artificial_intelligence
     Returns pure text/markdown directly in response body for zero-friction LLM prompting.
     """
-    # Ensure scheme
-    url = target_url
-    if not url.startswith("http://") and not url.startswith("https://"):
-        url = "https://" + url
+    # Normalize URL (handles bare domains, subdomains, collapsed slashes)
+    url = normalize_url(target_url)
 
     try:
         data = execute_extraction(url=url, mode="auto", format_type="markdown")

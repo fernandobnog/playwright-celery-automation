@@ -3,15 +3,21 @@ Pydantic schemas for AI-optimized web content extraction.
 """
 
 from typing import Any, Dict, List, Literal, Optional
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, field_validator
+from core.utils import normalize_url
 
 
 class AIExtractRequest(BaseModel):
     url: str = Field(
         ...,
-        description="Target URL to extract and convert to AI-optimized Markdown",
-        examples=["https://github.com/torvalds/linux", "https://pt.wikipedia.org/wiki/Python"],
+        description="Target URL (e.g. 'github.com/torvalds/linux', 'g1.globo.com', 'https://example.com')",
+        examples=["github.com/torvalds/linux", "pt.wikipedia.org/wiki/Python"],
     )
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def validate_and_normalize_url(cls, v: str) -> str:
+        return normalize_url(v)
     mode: Literal["auto", "browser", "fast"] = Field(
         default="auto",
         description=(
@@ -71,3 +77,10 @@ class AIBatchExtractRequest(BaseModel):
     urls: List[str] = Field(..., min_length=1, max_length=50, description="List of URLs to scrape in parallel")
     mode: Literal["auto", "browser", "fast"] = Field(default="auto")
     webhook_url: Optional[str] = Field(default=None, description="Optional outbound webhook URL for batch completion notification")
+
+    @field_validator("urls", mode="before")
+    @classmethod
+    def validate_and_normalize_urls(cls, v: Any) -> Any:
+        if isinstance(v, list):
+            return [normalize_url(u) for u in v]
+        return v

@@ -3,13 +3,14 @@ Pydantic schemas for API request and response validation.
 """
 
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+from core.utils import normalize_url
 
 
 class QuoteETLRequest(BaseModel):
     source_url: str = Field(
         default="https://quotes.toscrape.com",
-        description="Target website URL for quote scraping",
+        description="Target website URL or domain for quote scraping",
     )
     tag: Optional[str] = Field(
         default=None,
@@ -25,6 +26,11 @@ class QuoteETLRequest(BaseModel):
         default=None,
         description="Outbound webhook URL to notify upon pipeline completion",
     )
+
+    @field_validator("source_url", mode="before")
+    @classmethod
+    def validate_and_normalize_url(cls, v: str) -> str:
+        return normalize_url(v)
 
 
 class ParallelETLRequest(BaseModel):

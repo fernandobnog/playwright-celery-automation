@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 import httpx
 from bs4 import BeautifulSoup, Comment, NavigableString, Tag
 
+from core.utils import normalize_url
 from scrapers.base import BasePlaywrightScraper
 from scrapers.humanizer import human_scroll, human_sleep
 from scrapers.stealth import get_random_user_agent
@@ -386,6 +387,7 @@ class AIExtractor:
         """
         Extracts and converts website content into AI-optimized Markdown.
         """
+        url = normalize_url(url)
         logger.info("Extracting AI content from URL: %s (mode=%s)", url, mode)
         html = ""
         mode_used = "fast"
