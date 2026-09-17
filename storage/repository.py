@@ -80,8 +80,20 @@ class PipelineRepository:
                     last_checked TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     last_changed TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
+
+                CREATE TABLE IF NOT EXISTS editorial_publications (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id TEXT UNIQUE,
+                    tema TEXT NOT NULL,
+                    categoria TEXT NOT NULL,
+                    angulo_editorial TEXT,
+                    doc_id TEXT,
+                    doc_url TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
             """)
             conn.commit()
+            self._backfill_editorial_publications(conn)
 
     def save_scraped_items(self, task_id: str, source_url: str, items: List[Dict[str, Any]]):
         """Inserts a batch of scraped items."""
@@ -184,5 +196,104 @@ class PipelineRepository:
             )
             conn.commit()
 
+    def _backfill_editorial_publications(self, conn: sqlite3.Connection):
+        """
+        Backfills successful deep_content_generation executions into editorial_publications
+        if the table is currently empty.
+        """
+        try:
+            cursor = conn.execute("SELECT COUNT(*) FROM editorial_publications")
+            if cursor.fetchone()[0] > 0:
+                return
+
+            flow_cursor = conn.execute(
+                """
+                SELECT task_id, created_at, input_payload, output_payload
+                FROM flow_executions
+                WHERE flow_name = 'deep_content_generation' AND status = 'SUCCESS'
+                ORDER BY created_at ASC
+                """
+            )
+            rows = flow_cursor.fetchall()
+            for row in rows:
+                task_id = row["task_id"]
+                created_at = row["created_at"]
+                inp = json.loads(row["input_payload"]) if row["input_payload"] else {}
+                out = json.loads(row["output_payload"]) if row["output_payload"] else {}
+
+                tema = out.get("tema") or inp.get("pauta_titulo")
+                categoria = out.get("categoria") or inp.get("categoria") or "Tecnologia da Informação (TI)"
+                angulo = inp.get("angulo_editorial") or inp.get("contexto_adicional")
+                doc_id = out.get("doc_id")
+                doc_url = out.get("doc_url")
+
+                if tema:
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO editorial_publications
+                        (task_id, tema, categoria, angulo_editorial, doc_id, doc_url, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (task_id, tema, categoria, angulo, doc_id, doc_url, created_at),
+                    )
+            conn.commit()
+            logger.info("Successfully backfilled editorial_publications from past executions.")
+        except Exception as e:
+            logger.warning("Could not backfill editorial publications: %s", e)
+
+    def record_editorial_publication(
+        self,
+        task_id: str,
+        tema: str,
+        categoria: str,
+        angulo_editorial: Optional[str] = None,
+        doc_id: Optional[str] = None,
+        doc_url: Optional[str] = None,
+        created_at: Optional[str] = None,
+    ) -> bool:
+        """
+        Records or updates an approved and generated editorial publication in history.
+        """
+        with self._get_connection() as conn:
+            if created_at:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO editorial_publications
+                    (task_id, tema, categoria, angulo_editorial, doc_id, doc_url, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (task_id, tema, categoria, angulo_editorial, doc_id, doc_url, created_at),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO editorial_publications
+                    (task_id, tema, categoria, angulo_editorial, doc_id, doc_url, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    """,
+                    (task_id, tema, categoria, angulo_editorial, doc_id, doc_url),
+                )
+            conn.commit()
+            logger.info("Recorded editorial publication: '%s' (%s)", tema, categoria)
+            return True
+
+    def get_recent_editorial_publications(self, days: int = 7) -> List[Dict[str, Any]]:
+        """
+        Retrieves editorial publications produced in the last N days.
+        Used by daily curation to prevent duplicate themes and ensure topical diversity.
+        """
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT id, task_id, tema, categoria, angulo_editorial, doc_id, doc_url, created_at
+                FROM editorial_publications
+                WHERE created_at >= datetime('now', ?)
+                ORDER BY created_at DESC
+                """,
+                (f"-{days} days",),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
 
 repo = PipelineRepository()
+

@@ -1040,4 +1040,18 @@ def task_deep_content_generation(token_payload: Dict[str, Any]) -> Dict[str, Any
     )
 
     repo.log_flow_complete(task_id, result)
+
+    # 5. Record into persistent editorial history to prevent duplicate future themes
+    try:
+        repo.record_editorial_publication(
+            task_id=task_id,
+            tema=result.get("tema") or pauta_titulo,
+            categoria=result.get("categoria") or categoria,
+            angulo_editorial=contexto,
+            doc_id=result.get("doc_id"),
+            doc_url=result.get("doc_url"),
+        )
+    except Exception as exc_repo:
+        logger.warning("Could not record editorial publication into history: %s", exc_repo)
+
     return result

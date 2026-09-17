@@ -64,11 +64,69 @@ def test_render_pautas_email_html():
         )
     ]
 
-    html = render_pautas_email_html(pautas)
+    html = render_pautas_email_html(pautas, recent_publications_count=3)
     assert "Nova Regulamentação de IA no CNJ" in html
     assert "Tribunais devem auditar modelos preditivos" in html
     assert "PAUTA #1" in html
     assert "Omni-Flow Python Engine" in html
+    assert "Memória Editorial: 3 publicação(ões)" in html
+
+
+def test_is_topic_repetitive():
+    from flows.flow_editorial_pautas import is_topic_repetitive
+
+    recent_titles = [
+        "Música e Entretenimento Cruzado: O Papel do Spotify nas Campanhas de Marketing de GTA 6 e Stranger Things",
+        "A Ofensiva do Vídeo no Spotify: Como a Monetização de Videocasts e Clipes Miram a Recuperação de Valor",
+        "Inteligência Artificial: Entre o Potencial Transformador e os Desafios Éticos e Regulatórios",
+    ]
+
+    # Clearly repetitive against Spotify videocasts
+    assert is_topic_repetitive(
+        "A Estratégia do Spotify e Videocasts na Monetização de Criadores",
+        recent_titles,
+    ) is True
+
+    # Clearly repetitive against AI Regulation
+    assert is_topic_repetitive(
+        "Inteligência Artificial e os Desafios Éticos e Regulatórios Urgentes",
+        recent_titles,
+    ) is True
+
+    # Fresh, completely distinct topics should pass
+    assert is_topic_repetitive(
+        "Engenharia de Confiabilidade (SRE): Lições de Resiliência em Kubernetes e Cloud",
+        recent_titles,
+    ) is False
+
+    assert is_topic_repetitive(
+        "Turnês Acústicas e a Retomada dos Festivais Independentes no Brasil",
+        recent_titles,
+    ) is False
+
+
+def test_editorial_publications_repository(tmp_path):
+    from storage.repository import PipelineRepository
+
+    test_db = tmp_path / "test_repo.db"
+    repo_inst = PipelineRepository(db_path=str(test_db))
+
+    assert repo_inst.get_recent_editorial_publications(days=7) == []
+
+    repo_inst.record_editorial_publication(
+        task_id="test_task_1",
+        tema="Cibersegurança e Ransomware em Infraestruturas Críticas",
+        categoria="Tecnologia da Informação (TI)",
+        angulo_editorial="Como empresas de energia estão mitigando riscos",
+        doc_id="doc123",
+        doc_url="https://docs.google.com/doc123",
+    )
+
+    recent = repo_inst.get_recent_editorial_publications(days=7)
+    assert len(recent) == 1
+    assert recent[0]["tema"] == "Cibersegurança e Ransomware em Infraestruturas Críticas"
+    assert recent[0]["categoria"] == "Tecnologia da Informação (TI)"
+    assert recent[0]["doc_id"] == "doc123"
 
 
 def test_task_daily_editorial_curation():
@@ -88,6 +146,7 @@ def test_task_daily_editorial_curation():
     with patch("flows.flow_editorial_pautas.fetch_and_filter_rss_articles") as mock_rss, \
          patch("integrations.gemini.GeminiClient.generate_structured", return_value=mock_curadoria), \
          patch("integrations.google_service.GoogleServicesClient.send_email") as mock_send_email, \
+         patch("storage.repository.repo.get_recent_editorial_publications", return_value=[{"tema": "Tema Antigo", "categoria": "TI"}]), \
          patch("storage.repository.repo.log_flow_start"), \
          patch("storage.repository.repo.log_flow_complete"):
 
@@ -98,4 +157,6 @@ def test_task_daily_editorial_curation():
         result = task_daily_editorial_curation()
         assert result["status"] == "SUCCESS"
         assert result["total_pautas_generated"] == 1
+        assert result["recent_publications_considered"] == 1
         mock_send_email.assert_called_once()
+

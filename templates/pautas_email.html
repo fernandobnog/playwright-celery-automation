@@ -34,6 +34,11 @@
                     <p style="margin: 0; color: #94a3b8; font-size: 14px; line-height: 20px;">
                       {{ pautas|length }} pautas com síntese factual, fontes e tópicos de apoio para redação.
                     </p>
+                    {% if recent_publications_count and recent_publications_count > 0 %}
+                    <div style="margin-top: 12px; display: inline-block; background-color: rgba(34, 197, 94, 0.12); border: 1px solid rgba(34, 197, 94, 0.3); border-radius: 6px; padding: 5px 12px; font-size: 11px; color: #86efac; font-weight: 600; letter-spacing: 0.2px;">
+                      🧠 Memória Editorial: {{ recent_publications_count }} publicação(ões) desta semana consideradas para garantir temas inéditos.
+                    </div>
+                    {% endif %}
                   </td>
                 </tr>
               </table>
