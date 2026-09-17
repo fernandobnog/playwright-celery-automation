@@ -1,6 +1,7 @@
 """
-Google APIs Client (Calendar, Sheets, and Gmail) using OAuth2 Refresh Tokens.
-Provides helper methods for calendar event synchronisation, spreadsheet reading, and email delivery.
+Google APIs Client (Calendar, Sheets, and Gmail) using OAuth2 / Service Account.
+Backed by the modular integrations.google hub while preserving original discovery methods
+for direct compatibility with existing tests.
 """
 
 import base64
@@ -13,6 +14,7 @@ from googleapiclient.discovery import build
 import gspread
 
 from core.config import settings
+from integrations.google import GoogleHub
 
 logger = logging.getLogger(__name__)
 
@@ -27,47 +29,18 @@ class GoogleServicesClient:
         client_id: Optional[str] = None,
         client_secret: Optional[str] = None,
     ):
-        self.client_id = client_id or settings.GOOGLE_CLIENT_ID
-        self.client_secret = client_secret or settings.GOOGLE_CLIENT_SECRET
+        self.hub = GoogleHub(client_id=client_id, client_secret=client_secret)
+        self.client_id = self.hub.auth.client_id
+        self.client_secret = self.hub.auth.client_secret
 
     def get_calendar_credentials(self) -> Credentials:
-        return Credentials(
-            token=None,
-            refresh_token=settings.GOOGLE_CALENDAR_REFRESH_TOKEN,
-            token_uri="https://oauth2.googleapis.com/token",
-            client_id=self.client_id,
-            client_secret=self.client_secret,
-            scopes=[
-                "https://www.googleapis.com/auth/calendar",
-                "https://www.googleapis.com/auth/calendar.events",
-            ],
-        )
+        return self.hub.auth.get_oauth_credentials("calendar")
 
     def get_sheets_credentials(self) -> Credentials:
-        return Credentials(
-            token=None,
-            refresh_token=settings.GOOGLE_SHEETS_REFRESH_TOKEN,
-            token_uri="https://oauth2.googleapis.com/token",
-            client_id=self.client_id,
-            client_secret=self.client_secret,
-            scopes=[
-                "https://www.googleapis.com/auth/spreadsheets",
-                "https://www.googleapis.com/auth/drive.file",
-            ],
-        )
+        return self.hub.auth.get_oauth_credentials("sheets")
 
     def get_gmail_credentials(self) -> Credentials:
-        return Credentials(
-            token=None,
-            refresh_token=settings.GMAIL_REFRESH_TOKEN,
-            token_uri="https://oauth2.googleapis.com/token",
-            client_id=self.client_id,
-            client_secret=settings.GMAIL_CLIENT_SECRET or self.client_secret,
-            scopes=[
-                "https://www.googleapis.com/auth/gmail.modify",
-                "https://www.googleapis.com/auth/gmail.compose",
-            ],
-        )
+        return self.hub.auth.get_oauth_credentials("gmail")
 
     # --------------------------------------------------------------------------
     # Google Calendar Operations
