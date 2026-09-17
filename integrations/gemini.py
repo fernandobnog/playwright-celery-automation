@@ -96,7 +96,7 @@ class GeminiClient:
         )
 
         models_to_try = [model_name]
-        for fallback in ["gemini-flash-latest", "gemini-2.5-flash-lite"]:
+        for fallback in ["gemini-3.5-flash", "gemini-flash-latest", "gemini-3.5-flash-lite"]:
             if fallback not in models_to_try:
                 models_to_try.append(fallback)
 
