@@ -176,13 +176,13 @@ def test_editorial_select_endpoint_duplicate_and_conflict():
         mock_redis.get.return_value = json.dumps({"pauta_id": 1, "pauta_titulo": "Tema TI Único", "categoria": "Tecnologia da Informação (TI)"})
         resp_reclick = client.get(f"/api/v1/editorial/select?token={token1}")
         assert resp_reclick.status_code == 200
-        assert "Tema Já Selecionado Anteriormente" in resp_reclick.text
+        assert "Tema Já em Produção" in resp_reclick.text
         assert mock_delay.call_count == 1  # Not called again!
 
         # 3. Clicking a different topic returns conflict warning without calling celery
         resp_conflict = client.get(f"/api/v1/editorial/select?token={token2}")
         assert resp_conflict.status_code == 200
-        assert "Outro Tema Já Foi Selecionado Hoje" in resp_conflict.text
+        assert "Outro Tema Já Foi Escolhido Hoje" in resp_conflict.text
         assert mock_delay.call_count == 1  # Still not called again!
 
         # 4. Forcing replacement succeeds

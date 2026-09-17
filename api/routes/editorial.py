@@ -2,6 +2,7 @@
 FastAPI Routes for Human-in-the-Loop Editorial Topic Selection and Content Triggering.
 Receives one-click callback from daily curation email and initiates deep research & drafting pipeline.
 Enforces single-topic selection per daily curation batch with conflict detection and idempotency locks.
+Features premium responsive confirmation UI matching the daily curation email design language.
 """
 
 from datetime import datetime
@@ -21,6 +22,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/editorial", tags=["Editorial & Content Ops"])
 
+DRIVE_FOLDER_URL = "https://drive.google.com/drive/folders/10hlkHJNWdfAAHU6dicFKW_gaObeG2vRw"
+
 
 def _get_redis() -> Optional[Redis]:
     """Returns connected Redis client or None if unreachable."""
@@ -33,69 +36,343 @@ def _get_redis() -> Optional[Redis]:
         return None
 
 
-def _render_invalid_token_html() -> str:
-    return """
-    <!DOCTYPE html>
-    <html lang="pt-BR">
-    <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Link Inválido ou Expirado</title>
-        <style>
-            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #0f172a; color: #f8fafc; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 16px; }
-            .card { background-color: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 32px; max-width: 480px; text-align: center; box-shadow: 0 10px 25px rgba(0,0,0,0.3); }
-            .icon { font-size: 44px; margin-bottom: 16px; }
-            h1 { font-size: 20px; margin: 0 0 10px 0; color: #f43f5e; }
-            p { color: #94a3b8; font-size: 14px; line-height: 1.6; margin: 0; }
-        </style>
-    </head>
-    <body>
-        <div class="card">
-            <div class="icon">⚠️</div>
-            <h1>Link Expirado ou Inválido</h1>
-            <p>Este link de ação expirou (validade de 48h) ou possui uma assinatura inválida. Por favor, verifique o e-mail de curadoria mais recente.</p>
+def _get_category_theme(categoria: str) -> Dict[str, str]:
+    """Returns color tokens tailored to category matching the curation email."""
+    if "Música" in categoria or "Musica" in categoria:
+        return {
+            "top_bar": "#be185d",
+            "badge_bg": "#fce7f3",
+            "badge_text": "#be185d",
+            "tag_text": "#fbcfe8",
+            "accent_btn": "#be185d",
+            "accent_btn_hover": "#9d174d",
+            "icon": "🎵",
+            "label": "Música & Mercado Musical",
+        }
+    return {
+        "top_bar": "#4f46e5",
+        "badge_bg": "#e0e7ff",
+        "badge_text": "#4338ca",
+        "tag_text": "#93c5fd",
+        "accent_btn": "#4f46e5",
+        "accent_btn_hover": "#4338ca",
+        "icon": "💻",
+        "label": "Tecnologia da Informação (TI)",
+    }
+
+
+def _render_page_wrapper(top_bar_color: str, tag_text: str, tag_color: str, title: str, subtitle: str, body_content: str) -> str:
+    """Generates the full HTML shell mirroring the daily email visual system."""
+    return f"""<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{html.escape(title)} - fernandonogueira.dev.br</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        * {{
+            box-sizing: border-box;
+        }}
+        body {{
+            margin: 0;
+            padding: 40px 16px;
+            background-color: #f1f5f9;
+            font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            color: #0f172a;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            min-height: 100vh;
+            -webkit-font-smoothing: antialiased;
+        }}
+        .container {{
+            width: 100%;
+            max-width: 620px;
+            margin: 0 auto;
+        }}
+        /* Top Dark Banner matching email header */
+        .header-banner {{
+            background-color: #0f172a;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 15px rgba(15, 23, 42, 0.08);
+            margin-bottom: 24px;
+        }}
+        .header-stripe {{
+            height: 4px;
+            background-color: {top_bar_color};
+            width: 100%;
+        }}
+        .header-inner {{
+            padding: 26px 28px;
+        }}
+        .header-tag {{
+            display: inline-block;
+            background-color: rgba(255, 255, 255, 0.1);
+            color: {tag_color};
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            padding: 4px 10px;
+            border-radius: 4px;
+            text-transform: uppercase;
+            margin-bottom: 10px;
+        }}
+        .header-title {{
+            margin: 0 0 6px 0;
+            color: #ffffff;
+            font-size: 22px;
+            font-weight: 800;
+            line-height: 28px;
+            letter-spacing: -0.4px;
+        }}
+        .header-sub {{
+            margin: 0;
+            color: #94a3b8;
+            font-size: 14px;
+            line-height: 20px;
+        }}
+        /* Main Content Card matching email cards */
+        .card {{
+            background-color: #ffffff;
+            border-radius: 10px;
+            border: 1px solid #e2e8f0;
+            box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
+            padding: 26px 28px;
+            margin-bottom: 20px;
+        }}
+        .badge {{
+            display: inline-block;
+            font-size: 11px;
+            font-weight: 800;
+            letter-spacing: 0.8px;
+            padding: 4px 10px;
+            border-radius: 20px;
+            text-transform: uppercase;
+            margin-bottom: 12px;
+        }}
+        .topic-title {{
+            margin: 0 0 14px 0;
+            color: #0f172a;
+            font-size: 18px;
+            line-height: 25px;
+            font-weight: 700;
+            letter-spacing: -0.3px;
+        }}
+        .callout {{
+            border-left: 3px solid #cbd5e1;
+            padding: 12px 14px;
+            background-color: #f8fafc;
+            border-radius: 0 6px 6px 0;
+            color: #475569;
+            font-size: 13px;
+            line-height: 20px;
+            margin: 16px 0;
+        }}
+        /* Pipeline Flow Steps */
+        .stepper {{
+            margin: 24px 0;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }}
+        .step-item {{
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 14px;
+            background-color: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 13px;
+            color: #334155;
+            font-weight: 500;
+        }}
+        .step-icon {{
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            background-color: #ffffff;
+            border: 1px solid #cbd5e1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 13px;
+            flex-shrink: 0;
+        }}
+        .step-active {{
+            border-color: #818cf8;
+            background-color: #eef2ff;
+            color: #3730a3;
+            font-weight: 600;
+        }}
+        .step-active .step-icon {{
+            background-color: #4f46e5;
+            color: #ffffff;
+            border-color: #4f46e5;
+        }}
+        .pulse-dot {{
+            width: 8px;
+            height: 8px;
+            background-color: #22c55e;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 6px;
+            box-shadow: 0 0 8px #22c55e;
+            animation: pulse-ring 1.5s infinite;
+        }}
+        @keyframes pulse-ring {{
+            0% {{ opacity: 0.3; transform: scale(0.9); }}
+            50% {{ opacity: 1; transform: scale(1.1); }}
+            100% {{ opacity: 0.3; transform: scale(0.9); }}
+        }}
+        /* Action Buttons */
+        .btn {{
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            background-color: #4f46e5;
+            color: #ffffff !important;
+            padding: 12px 22px;
+            border-radius: 6px;
+            text-decoration: none;
+            font-size: 13px;
+            font-weight: 700;
+            letter-spacing: 0.3px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+            transition: all 0.15s ease;
+            cursor: pointer;
+            border: none;
+        }}
+        .btn:hover {{
+            opacity: 0.95;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 10px rgba(0,0,0,0.12);
+        }}
+        .btn-outline {{
+            background-color: #ffffff;
+            color: #334155 !important;
+            border: 1px solid #cbd5e1;
+            box-shadow: none;
+        }}
+        .btn-outline:hover {{
+            background-color: #f8fafc;
+            border-color: #94a3b8;
+        }}
+        .btn-danger {{
+            background-color: #ba2649;
+        }}
+        .btn-danger:hover {{
+            background-color: #922824;
+        }}
+        /* Footer */
+        .footer {{
+            text-align: center;
+            padding: 14px 8px;
+            color: #94a3b8;
+            font-size: 12px;
+            line-height: 18px;
+        }}
+        .footer strong {{
+            color: #64748b;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Top Dark Banner -->
+        <div class="header-banner">
+            <div class="header-stripe"></div>
+            <div class="header-inner">
+                <span class="header-tag">{tag_text}</span>
+                <h1 class="header-title">{html.escape(title)}</h1>
+                <p class="header-sub">{html.escape(subtitle)}</p>
+            </div>
         </div>
-    </body>
-    </html>
+
+        <!-- Main Content Card -->
+        <div class="card">
+            {body_content}
+        </div>
+
+        <!-- Footer -->
+        <div class="footer">
+            Gerado automaticamente via <strong>Omni-Flow Python Engine</strong> • <a href="https://www.fernandonogueira.dev.br" target="_blank" style="color: #64748b; text-decoration: none;">fernandonogueira.dev.br</a>
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+
+def _render_invalid_token_html() -> str:
+    body = """
+    <div style="text-align: center; padding: 12px 0;">
+        <span class="badge" style="background-color: #ffe4e6; color: #be123c;">⚠️ Erro de Autenticação</span>
+        <h2 style="margin: 6px 0 12px 0; color: #0f172a; font-size: 20px; font-weight: 800;">Link Expirado ou Inválido</h2>
+        
+        <p style="color: #64748b; font-size: 14px; line-height: 22px; max-width: 480px; margin: 0 auto 20px auto;">
+            Este link de aprovação expirou (validade máxima de 48h) ou a assinatura digital de segurança HMAC não pôde ser confirmada.
+        </p>
+
+        <div class="callout" style="text-align: left;">
+            <strong style="color: #334155;">Como proceder:</strong> Acesse seu e-mail e abra a edição mais recente da <em>Curadoria de Conteúdo Diária</em> para selecionar um tema ativo.
+        </div>
+    </div>
     """
+    return _render_page_wrapper(
+        top_bar_color="#f43f5e",
+        tag_text="✦ Verificação de Segurança",
+        tag_color="#fca5a5",
+        title="Link Não Reconhecido",
+        subtitle="O token criptográfico apresentado não pôde ser validado com segurança.",
+        body_content=body,
+    )
 
 
 def _render_already_in_progress_html(escaped_title: str, escaped_cat: str) -> str:
-    return f"""
-    <!DOCTYPE html>
-    <html lang="pt-BR">
-    <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Tema Já em Produção</title>
-        <style>
-            body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #0f172a; color: #f8fafc; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 16px; }}
-            .card {{ background-color: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 32px 28px; max-width: 520px; text-align: center; box-shadow: 0 20px 35px rgba(0,0,0,0.4); }}
-            .badge {{ display: inline-block; background-color: rgba(34, 197, 94, 0.2); color: #4ade80; font-size: 11px; font-weight: 700; letter-spacing: 0.8px; padding: 4px 10px; border-radius: 20px; text-transform: uppercase; margin-bottom: 12px; }}
-            h1 {{ font-size: 22px; font-weight: 800; margin: 0 0 12px 0; color: #ffffff; }}
-            .pauta-box {{ background-color: rgba(15, 23, 42, 0.6); border: 1px solid #334155; border-radius: 8px; padding: 16px 18px; margin: 20px 0; text-align: left; }}
-            .pauta-title {{ color: #38bdf8; font-size: 15px; font-weight: 700; line-height: 1.4; margin: 0 0 6px 0; }}
-            p.info {{ color: #94a3b8; font-size: 13px; line-height: 1.6; margin: 0; }}
-        </style>
-    </head>
-    <body>
-        <div class="card">
-            <span class="badge">✅ Tema Já em Produção</span>
-            <h1>Tema Já Selecionado Anteriormente</h1>
-            
-            <div class="pauta-box">
-                <div class="pauta-title">{escaped_title}</div>
-                <div style="color: #64748b; font-size: 12px;">Categoria: {escaped_cat}</div>
-            </div>
+    theme = _get_category_theme(escaped_cat)
+    body = f"""
+    <div>
+        <span class="badge" style="background-color: #dcfce7; color: #15803d;">
+            ✅ Tema Já em Produção
+        </span>
 
-            <p class="info">
-                Você já havia acionado a produção deste tema.<br><br>
-                O agente redator já iniciou o processo ou o pacote final já foi entregue no seu <strong>Google Drive</strong>, <strong>WhatsApp</strong> e <strong>E-mail</strong>. Não é necessário clicar novamente.
-            </p>
+        <h2 class="topic-title" style="font-size: 19px; margin-top: 4px;">
+            {escaped_title}
+        </h2>
+
+        <div class="callout">
+            <strong style="color: #15803d;">Status da Solicitação:</strong> Você já acionou a produção deste tema hoje.
+            O agente redator autônomo já iniciou o ciclo de pesquisa web ou o pacote multicanal já foi compilado.
         </div>
-    </body>
-    </html>
+
+        <p style="color: #475569; font-size: 13px; line-height: 20px; margin: 16px 0;">
+            Não é necessário clicar novamente. Os arquivos gerados são organizados diretamente na sua pasta <strong>Editoriais</strong> do Google Drive e os alertas são despachados para o seu WhatsApp e E-mail.
+        </p>
+
+        <div style="display: flex; gap: 12px; margin-top: 22px; flex-wrap: wrap;">
+            <a href="{DRIVE_FOLDER_URL}" target="_blank" class="btn" style="background-color: {theme['accent_btn']};">
+                📁 Acessar Pasta "Editoriais" no Drive &rarr;
+            </a>
+            <a href="https://mail.google.com" target="_blank" class="btn btn-outline">
+                📧 Abrir Gmail
+            </a>
+        </div>
+    </div>
     """
+    return _render_page_wrapper(
+        top_bar_color=theme["top_bar"],
+        tag_text="✦ Confirmação Editorial",
+        tag_color=theme["tag_text"],
+        title="Pauta Já Selecionada",
+        subtitle="A redação deste conteúdo já foi encomendada e está registrada no pipeline.",
+        body_content=body,
+    )
 
 
 def _render_conflict_html(
@@ -105,172 +382,146 @@ def _render_conflict_html(
     escaped_new_cat: str,
     token: str,
 ) -> str:
-    return f"""
-    <!DOCTYPE html>
-    <html lang="pt-BR">
-    <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Apenas 1 Tema por Dia</title>
-        <style>
-            body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: #0f172a; color: #f8fafc; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 16px; }}
-            .card {{ background-color: #1e293b; border: 1px solid #eab308; border-radius: 12px; padding: 32px 28px; max-width: 540px; text-align: center; box-shadow: 0 20px 35px rgba(0,0,0,0.4); }}
-            .badge {{ display: inline-block; background-color: rgba(234, 179, 8, 0.2); color: #facc15; font-size: 11px; font-weight: 700; letter-spacing: 0.8px; padding: 4px 10px; border-radius: 20px; text-transform: uppercase; margin-bottom: 12px; }}
-            h1 {{ font-size: 21px; font-weight: 800; margin: 0 0 12px 0; color: #ffffff; }}
-            .box {{ background-color: rgba(15, 23, 42, 0.6); border: 1px solid #334155; border-radius: 8px; padding: 14px 16px; margin: 16px 0; text-align: left; }}
-            .label {{ font-size: 11px; text-transform: uppercase; font-weight: 700; color: #94a3b8; margin-bottom: 4px; }}
-            .title {{ font-size: 14px; font-weight: 600; color: #f8fafc; line-height: 1.4; }}
-            .btn {{ display: inline-block; background-color: #ba2649; color: #ffffff; font-weight: 700; font-size: 13px; padding: 12px 22px; border-radius: 6px; text-decoration: none; margin-top: 18px; transition: background 0.2s; }}
-            .btn:hover {{ background-color: #922824; }}
-            p.info {{ color: #94a3b8; font-size: 13px; line-height: 1.6; margin: 0; }}
-        </style>
-    </head>
-    <body>
-        <div class="card">
-            <span class="badge">⚠️ Limite Diário: 1 Pauta por Dia</span>
-            <h1>Outro Tema Já Foi Selecionado Hoje</h1>
-            
-            <p class="info">
-                Para manter a profundidade técnica e autoridade do portal <strong>fernandonogueira.dev.br</strong>, selecionamos apenas <strong>1 único tema por dia</strong>.
-            </p>
+    theme_new = _get_category_theme(escaped_new_cat)
+    theme_old = _get_category_theme(escaped_selected_cat)
+    body = f"""
+    <div>
+        <span class="badge" style="background-color: #fef9c3; color: #a16207;">
+            ⚠️ Regra Editorial • 1 Tema por Dia
+        </span>
 
-            <div class="box">
-                <div class="label">Tema já selecionado hoje:</div>
-                <div class="title" style="color: #4ade80;">{escaped_selected_title} ({escaped_selected_cat})</div>
+        <h2 style="margin: 4px 0 10px 0; color: #0f172a; font-size: 19px; font-weight: 800;">
+            Outro Tema Já Foi Escolhido Hoje
+        </h2>
+
+        <p style="color: #475569; font-size: 13px; line-height: 21px; margin: 0 0 16px 0;">
+            Para manter a autoridade técnica e máxima densidade factual de <strong>fernandonogueira.dev.br</strong>, produzimos com profundidade <strong>apenas 1 tema por dia</strong>.
+        </p>
+
+        <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 14px 16px; margin-bottom: 12px;">
+            <div style="font-size: 11px; font-weight: 800; color: #15803d; text-transform: uppercase; margin-bottom: 4px;">
+                ✓ Tema já selecionado hoje ({theme_old['icon']} {escaped_selected_cat}):
             </div>
-
-            <div class="box">
-                <div class="label">Você acabou de clicar em:</div>
-                <div class="title" style="color: #38bdf8;">{escaped_new_title} ({escaped_new_cat})</div>
+            <div style="font-size: 14px; font-weight: 700; color: #0f172a; line-height: 20px;">
+                {escaped_selected_title}
             </div>
+        </div>
 
-            <p class="info">
-                Se você clicou por engano e deseja <strong>substituir</strong> o tema anterior por este novo, confirme no botão abaixo:
-            </p>
+        <div style="background-color: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 14px 16px; margin-bottom: 20px;">
+            <div style="font-size: 11px; font-weight: 800; color: #b45309; text-transform: uppercase; margin-bottom: 4px;">
+                ➜ Novo tema em que você clicou ({theme_new['icon']} {escaped_new_cat}):
+            </div>
+            <div style="font-size: 14px; font-weight: 700; color: #92400e; line-height: 20px;">
+                {escaped_new_title}
+            </div>
+        </div>
 
-            <a href="/api/v1/editorial/select?token={token}&force=true" class="btn">
-                🔄 Substituir e Gerar Este Novo Tema &rarr;
+        <div class="callout">
+            <strong style="color: #334155;">Deseja trocar de tema?</strong> Se você clicou por engano ou mudou de ideia e quer produzir este novo assunto, clique em substituir abaixo:
+        </div>
+
+        <div style="display: flex; gap: 12px; margin-top: 20px; flex-wrap: wrap;">
+            <a href="/api/v1/editorial/select?token={token}&force=true" class="btn btn-danger" style="background-color: {theme_new['accent_btn']};">
+                🔄 Sim, Substituir e Gerar Novo Tema &rarr;
+            </a>
+            <a href="{DRIVE_FOLDER_URL}" target="_blank" class="btn btn-outline">
+                📁 Manter o Tema Atual e Ver Drive
             </a>
         </div>
-    </body>
-    </html>
+    </div>
     """
+    return _render_page_wrapper(
+        top_bar_color="#f59e0b",
+        tag_text="✦ Conflito de Seleção",
+        tag_color="#fde68a",
+        title="Apenas 1 Artigo Diário",
+        subtitle="Um tema já havia sido despachado para produção hoje. Você pode confirmar a troca se preferir.",
+        body_content=body,
+    )
 
 
 def _render_success_html(escaped_title: str, escaped_cat: str, task_id: str) -> str:
-    return f"""
-    <!DOCTYPE html>
-    <html lang="pt-BR">
-    <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Tema Selecionado com Sucesso</title>
-        <style>
-            body {{
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                background-color: #0f172a;
-                color: #f8fafc;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                min-height: 100vh;
-                margin: 0;
-                padding: 16px;
-            }}
-            .card {{
-                background-color: #1e293b;
-                border: 1px solid #334155;
-                border-radius: 12px;
-                padding: 32px 28px;
-                max-width: 520px;
-                text-align: center;
-                box-shadow: 0 20px 35px rgba(0,0,0,0.4);
-            }}
-            .badge {{
-                display: inline-block;
-                background-color: rgba(99, 102, 241, 0.2);
-                color: #818cf8;
-                font-size: 11px;
-                font-weight: 700;
-                letter-spacing: 0.8px;
-                padding: 4px 10px;
-                border-radius: 20px;
-                text-transform: uppercase;
-                margin-bottom: 12px;
-            }}
-            h1 {{
-                font-size: 22px;
-                font-weight: 800;
-                margin: 0 0 12px 0;
-                color: #ffffff;
-            }}
-            .pauta-box {{
-                background-color: rgba(15, 23, 42, 0.6);
-                border: 1px solid #334155;
-                border-radius: 8px;
-                padding: 16px 18px;
-                margin: 20px 0;
-                text-align: left;
-            }}
-            .pauta-title {{
-                color: #38bdf8;
-                font-size: 15px;
-                font-weight: 700;
-                line-height: 1.4;
-                margin: 0 0 6px 0;
-            }}
-            .status-line {{
-                display: flex;
-                align-items: center;
-                gap: 8px;
-                color: #4ade80;
-                font-size: 13px;
-                font-weight: 600;
-            }}
-            .pulse-dot {{
-                width: 8px;
-                height: 8px;
-                background-color: #4ade80;
-                border-radius: 50%;
-                box-shadow: 0 0 10px #4ade80;
-                animation: pulse 1.5s infinite;
-            }}
-            @keyframes pulse {{
-                0% {{ opacity: 0.4; }}
-                50% {{ opacity: 1; }}
-                100% {{ opacity: 0.4; }}
-            }}
-            p.info {{
-                color: #94a3b8;
-                font-size: 13px;
-                line-height: 1.6;
-                margin: 0;
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="card">
-            <span class="badge">🚀 Pipeline Editorial Iniciado</span>
-            <h1>Tema Selecionado com Sucesso!</h1>
-            
-            <div class="pauta-box">
-                <div class="pauta-title">{escaped_title}</div>
-                <div style="color: #64748b; font-size: 12px; margin-bottom: 8px;">Categoria: {escaped_cat}</div>
-                <div class="status-line">
-                    <span class="pulse-dot"></span>
-                    <span>Agente redator em execução (Task: {task_id[:8]}...)</span>
+    theme = _get_category_theme(escaped_cat)
+    body = f"""
+    <div>
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
+            <span class="badge" style="background-color: {theme['badge_bg']}; color: {theme['badge_text']}; margin-bottom: 0;">
+                {theme['icon']} {escaped_cat}
+            </span>
+            <span style="font-size: 12px; color: #16a34a; font-weight: 700; display: inline-flex; align-items: center;">
+                <span class="pulse-dot"></span> Pipeline Ativo (ID: {task_id[:8]})
+            </span>
+        </div>
+
+        <h2 class="topic-title">
+            {escaped_title}
+        </h2>
+
+        <div class="callout">
+            <strong style="color: #0f172a;">Tema confirmado com sucesso!</strong> O agente autônomo está realizando a investigação web na internet e produzindo o pacote editorial completo para <strong>fernandonogueira.dev.br</strong>.
+        </div>
+
+        <!-- Etapas em Andamento -->
+        <div class="stepper">
+            <div class="step-item step-active">
+                <div class="step-icon">🔍</div>
+                <div style="flex: 1;">
+                    <div style="font-weight: 700;">1. Agente de Pesquisa Autônomo</div>
+                    <div style="font-size: 11px; opacity: 0.85;">Buscas no Google, scraping com Chromium stealth e digestão factual</div>
+                </div>
+                <span class="pulse-dot" style="margin-left: auto;"></span>
+            </div>
+
+            <div class="step-item">
+                <div class="step-icon">✍️</div>
+                <div>
+                    <div style="font-weight: 700; color: #475569;">2. Redação Multicanal (Gemini AI)</div>
+                    <div style="font-size: 11px; color: #94a3b8;">Blog (SEO e casos reais), LinkedIn Pulse & Feed, Reels Instagram e Prompts de Imagem</div>
                 </div>
             </div>
 
-            <p class="info">
-                O Gemini IA está aprofundando o assunto com buscas na web e redigindo os 4 canais:<br>
-                <strong>Blog WordPress</strong> (SEO completo), <strong>LinkedIn Pulse & Feed</strong>, <strong>Instagram</strong> e <strong>Prompts de Imagem</strong>.<br><br>
-                Assim que estiver concluído (~60-90 segundos), o documento do <strong>Google Docs</strong> será salvo e o link enviado no seu WhatsApp e E-mail.
-            </p>
+            <div class="step-item">
+                <div class="step-icon">📁</div>
+                <div>
+                    <div style="font-weight: 700; color: #475569;">3. Organização no Google Drive</div>
+                    <div style="font-size: 11px; color: #94a3b8;">Criação do Google Doc formatado e salvamento na pasta <em>Editoriais</em></div>
+                </div>
+            </div>
+
+            <div class="step-item">
+                <div class="step-icon">📲</div>
+                <div>
+                    <div style="font-weight: 700; color: #475569;">4. Notificação Instantânea</div>
+                    <div style="font-size: 11px; color: #94a3b8;">Aviso com link direto via WhatsApp (Evolution API) e E-mail (Gmail)</div>
+                </div>
+            </div>
         </div>
-    </body>
-    </html>
+
+        <div style="background-color: #f8fafc; border: 1px dashed #cbd5e1; border-radius: 8px; padding: 14px 16px; margin: 20px 0;">
+            <div style="font-size: 12px; color: #475569; line-height: 19px;">
+                ⏱️ <strong>Tempo estimado:</strong> ~60 a 90 segundos.<br>
+                Você já pode fechar esta aba com tranquilidade. Assim que o documento for gerado, você receberá a notificação com o link direto no seu celular.
+            </div>
+        </div>
+
+        <div style="display: flex; gap: 12px; margin-top: 20px; flex-wrap: wrap;">
+            <a href="{DRIVE_FOLDER_URL}" target="_blank" class="btn" style="background-color: {theme['accent_btn']};">
+                📁 Acessar Pasta "Editoriais" no Drive &rarr;
+            </a>
+            <a href="https://web.whatsapp.com" target="_blank" class="btn btn-outline">
+                💬 Abrir WhatsApp Web
+            </a>
+        </div>
+    </div>
     """
+    return _render_page_wrapper(
+        top_bar_color=theme["top_bar"],
+        tag_text="✦ Confirmação de Pauta",
+        tag_color=theme["tag_text"],
+        title="Tema Selecionado com Sucesso!",
+        subtitle=f"Produção iniciada para a categoria {escaped_cat}.",
+        body_content=body,
+    )
 
 
 @router.get("/select", response_class=HTMLResponse)
