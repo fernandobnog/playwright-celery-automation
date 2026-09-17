@@ -56,6 +56,11 @@ celery_app.conf.update(
         "flows.flow_lead_qualification.task_process_lead_qualification": {"queue": "flows"},
         "flows.flow_editorial_pautas.task_daily_editorial_curation": {"queue": "flows"},
         "flows.flow_calendar_sync.task_sync_sheets_to_calendar": {"queue": "flows"},
+        "flows.flow_whatsapp_eventos.task_reengajar_locais_eventos": {"queue": "flows"},
+        "flows.flow_site_sync.task_sync_site_agenda": {"queue": "flows"},
+        "flows.flow_site_sync.task_sync_site_repertorio": {"queue": "flows"},
+        "flows.flow_proposal_generator.task_generate_and_send_proposal": {"queue": "flows"},
+        "flows.flow_content_deep_writer.task_deep_content_generation": {"queue": "flows"},
     },
 
     # Beat Periodic Schedules (Automations replacing n8n scheduled triggers)
@@ -73,6 +78,16 @@ celery_app.conf.update(
         "daily-editorial-pautas-07am": {
             "task": "flows.flow_editorial_pautas.task_daily_editorial_curation",
             "schedule": crontab(hour=7, minute=0),  # Every day at 07:00 AM (Temas em alta)
+            "options": {"queue": "flows"},
+        },
+        "daily-site-agenda-sync-05am": {
+            "task": "flows.flow_site_sync.task_sync_site_agenda",
+            "schedule": crontab(hour=5, minute=0),  # Daily at 05:00 AM BRT
+            "options": {"queue": "flows"},
+        },
+        "daily-site-repertorio-sync-0530am": {
+            "task": "flows.flow_site_sync.task_sync_site_repertorio",
+            "schedule": crontab(hour=5, minute=30),  # Daily at 05:30 AM BRT
             "options": {"queue": "flows"},
         },
         "daily-morning-quote-etl": {
@@ -98,6 +113,10 @@ celery_app.conf.update(
         "flows.flow_lead_qualification",
         "flows.flow_editorial_pautas",
         "flows.flow_calendar_sync",
+        "flows.flow_whatsapp_eventos",
+        "flows.flow_site_sync",
+        "flows.flow_proposal_generator",
+        "flows.flow_content_deep_writer",
     ],
 )
 

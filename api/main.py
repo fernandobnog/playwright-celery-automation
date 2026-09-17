@@ -12,9 +12,12 @@ from redis import Redis
 
 from api.routes import (
     ai_extract_router,
+    editorial_router,
     flows_router,
     google_search_router,
     leads_router,
+    proposals_router,
+    sync_router,
     tasks_router,
     webhooks_router,
 )
@@ -111,6 +114,20 @@ app.include_router(
 app.include_router(
     leads_router,
     prefix="/api/v1",
+)
+app.include_router(
+    editorial_router,
+    prefix="/api/v1",
+)
+app.include_router(
+    proposals_router,
+    prefix="/api/v1",
+    dependencies=[Depends(verify_internal_api_key)],
+)
+app.include_router(
+    sync_router,
+    prefix="/api/v1",
+    dependencies=[Depends(verify_internal_api_key)],
 )
 
 

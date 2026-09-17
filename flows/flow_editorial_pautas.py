@@ -19,33 +19,40 @@ from storage.repository import repo
 
 logger = logging.getLogger(__name__)
 
-GOOGLE_NEWS_FEEDS = [
-    "https://news.google.com/rss/search?q=(%22intelig%C3%AAncia+artificial%22+OR+IA+OR+genai)+AND+(jur%C3%ADdico+OR+advogado+OR+%22escrit%C3%B3rio+de+advocacia%22)&hl=pt-BR&gl=BR&ceid=BR:pt-419",
-    "https://news.google.com/rss/search?q=(%22intelig%C3%AAncia+artificial%22+OR+IA+OR+algoritmo)+AND+(CNJ+OR+STF+OR+STJ+OR+%22tribunal+de+justi%C3%A7a%22+OR+%22judici%C3%A1rio%22)&hl=pt-BR&gl=BR&ceid=BR:pt-419",
-    "https://news.google.com/rss/search?q=(%22prompt+injection%22+OR+%22marco+legal+da+IA%22+OR+%22jurisprud%C3%AAncia+falsa%22+OR+%22alucina%C3%A7%C3%A3o%22+OR+%22discrimina%C3%A7%C3%A3o+algor%C3%ADtmica%22)+AND+(direito+OR+jur%C3%ADdico+OR+processo)&hl=pt-BR&gl=BR&ceid=BR:pt-419",
+FEEDS_TI = [
+    "https://news.google.com/rss/search?q=(%22tecnologia+da+informa%C3%A7%C3%A3o%22+OR+%22intelig%C3%AAncia+artificial%22+OR+%22desenvolvimento+de+software%22+OR+ciberseguran%C3%A7a+OR+cloud)&hl=pt-BR&gl=BR&ceid=BR:pt-419",
+    "https://news.google.com/rss/search?q=(%22engenharia+de+software%22+OR+DevOps+OR+%22computa%C3%A7%C3%A3o+em+nuvem%22+OR+GenAI+OR+LLM)&hl=pt-BR&gl=BR&ceid=BR:pt-419",
+]
+
+FEEDS_MUSICA = [
+    "https://news.google.com/rss/search?q=(%22mercado+musical%22+OR+%22m%C3%BAsica+ao+vivo%22+OR+%22ind%C3%BAstria+musical%22+OR+%22produ%C3%A7%C3%A3o+musical%22)&hl=pt-BR&gl=BR&ceid=BR:pt-419",
+    "https://news.google.com/rss/search?q=(%22streaming+de+m%C3%BAsica%22+OR+Spotify+OR+%22shows+e+festivais%22+OR+%22voz+e+viol%C3%A3o%22+OR+ECAD)&hl=pt-BR&gl=BR&ceid=BR:pt-419",
 ]
 
 EDITORIAL_SYSTEM_INSTRUCTION = """
-Atue como Editor-Chefe e Estrategista de Conteúdo especializado no mercado Jurídico e Legal Tech.
+Atue como Editor-Chefe e Estrategista de Conteúdo especializado em Tecnologia da Informação (TI) e na Indústria/Cultura da Música.
 
-Analise as notícias recentes listadas, identifique os tópicos mais relevantes e formule exatamente 2 propostas de pautas editoriais para a redação de artigos e análises aprofundadas.
+Analise as notícias recentes listadas e formule OBRIGATORIAMENTE 4 propostas de pautas editoriais para artigos, postagens e reflexões:
+- Exatamente 2 pautas na categoria 'Tecnologia da Informação (TI)' (focadas em IA, desenvolvimento de software, cloud, engenharia, cibersegurança).
+- Exatamente 2 pautas na categoria 'Música & Mercado Musical' (focadas em mercado da música, shows ao vivo, streaming, direitos autorais, tendências e produção musical).
 
 Diretrizes obrigatórias:
-1. Agrupamento Temático: Cruze notícias que tratam de aspectos do mesmo problema para sustentar cada pauta com mais de uma fonte, quando cabível.
-2. Fidelidade Factual Estrita: No campo "sintese_fiel_das_materias", limite-se aos fatos, decisões, casos e números explicitamente citados nas notícias vinculadas. Não invente premissas ou jurisprudências não mencionadas.
-3. Utilidade de Redação: Forneça substância e ganchos suficientes para que o texto final possa ser redigido sem a necessidade de reabrir a lista de notícias.
+1. Agrupamento Temático: Cruze notícias que tratam de aspectos do mesmo problema ou tendência para sustentar cada pauta com mais de uma fonte, quando cabível.
+2. Fidelidade Factual Estrita: No campo "sintese_fiel_das_materias", limite-se aos fatos, lançamentos, números, declarações e decisões explicitamente citados nas notícias vinculadas. Não invente dados não mencionados.
+3. Utilidade de Redação: Forneça ganchos substanciais e roteiro detalhado para que o texto final possa ser redigido com autoridade.
+4. Equilíbrio Rigoroso: Entregue exatamente 2 pautas de TI e 2 pautas de Música com o campo 'categoria' devidamente preenchido.
 """
 
 
 def fetch_and_filter_rss_articles(
     feeds: Optional[List[str]] = None,
     cutoff_days: int = 6,
-    limit: int = 35,
+    limit: int = 25,
 ) -> List[Dict[str, Any]]:
     """
     Parses Google News RSS feeds, eliminates duplicates, and keeps articles published within cutoff_days.
     """
-    feed_urls = feeds or GOOGLE_NEWS_FEEDS
+    feed_urls = feeds or (FEEDS_TI + FEEDS_MUSICA)
     cutoff = datetime.now(timezone.utc) - timedelta(days=cutoff_days)
     seen_titles = set()
     articles = []
@@ -99,25 +106,41 @@ def render_pautas_email_html(pautas: List[PautaEditorial]) -> str:
 @celery_app.task(name="flows.flow_editorial_pautas.task_daily_editorial_curation")
 def task_daily_editorial_curation() -> Dict[str, Any]:
     """
-    Periodic task running daily at 07:00 BRT to generate content topics for the day.
+    Periodic task running daily at 07:00 BRT to generate 2 IT topics and 2 Music topics.
     """
     task_id = "daily_pautas_" + datetime.now().strftime("%Y%m%d")
-    logger.info("Starting Daily Editorial Curation pipeline...")
+    logger.info("Starting Daily Editorial Curation pipeline (2 TI + 2 Música)...")
     repo.log_flow_start(task_id, "daily_editorial_curation", {})
 
-    # 1. Fetch and filter articles
-    articles = fetch_and_filter_rss_articles()
-    if not articles:
+    # 1. Fetch and filter articles for both categories
+    articles_ti = fetch_and_filter_rss_articles(feeds=FEEDS_TI, limit=25)
+    articles_musica = fetch_and_filter_rss_articles(feeds=FEEDS_MUSICA, limit=25)
+
+    if not articles_ti and not articles_musica:
         logger.warning("No articles found in RSS feeds for the specified window.")
         return {"status": "NO_ARTICLES", "pautas": []}
 
-    formatted_text = "\n".join(
-        [f"{i+1}. [{a['date']}] [{a['source']}] {a['title']}" for i, a in enumerate(articles)]
+    formatted_ti = "\n".join(
+        [f"{i+1}. [{a['date']}] [{a['source']}] {a['title']}" for i, a in enumerate(articles_ti)]
+    )
+    formatted_musica = "\n".join(
+        [f"{i+1}. [{a['date']}] [{a['source']}] {a['title']}" for i, a in enumerate(articles_musica)]
+    )
+
+    prompt = (
+        "Resumo das notícias recentes encontradas nos últimos 6 dias divididas por área:\n\n"
+        "=== 💻 NOTÍCIAS DE TECNOLOGIA DA INFORMAÇÃO (TI) ===\n"
+        f"{formatted_ti}\n\n"
+        "=== 🎵 NOTÍCIAS DE MÚSICA & MERCADO MUSICAL ===\n"
+        f"{formatted_musica}\n\n"
+        "Com base rigorosa nos acontecimentos acima, elabore EXATAMENTE 4 pautas:\n"
+        "- 2 pautas de Tecnologia da Informação (TI)\n"
+        "- 2 pautas de Música & Mercado Musical\n"
+        "Preencha o campo 'categoria' de cada pauta com o nome exato correspondente."
     )
 
     # 2. Curate with Gemini
     gemini = GeminiClient()
-    prompt = f"Resumo das notícias recentes encontradas nos últimos 6 dias:\n\n{formatted_text}"
     curadoria: CuradoriaPautasResult = gemini.generate_structured(
         prompt=prompt,
         system_instruction=EDITORIAL_SYSTEM_INSTRUCTION,
@@ -125,22 +148,36 @@ def task_daily_editorial_curation() -> Dict[str, Any]:
         model_name="gemini-2.5-flash",
     )
 
-    # 3. Render and Send HTML Email
+    # 3. Generate signed action tokens for one-click Blog + LinkedIn drafting
+    from core.security import create_editorial_action_token
+    base_url = "https://www.fernandonogueira.dev.br"
+    for pauta in curadoria.pautas:
+        token = create_editorial_action_token(
+            pauta_id=pauta.id,
+            pauta_titulo=pauta.titulo,
+            categoria=pauta.categoria,
+            target_format="both",
+            angulo_editorial=pauta.angulo_editorial,
+        )
+        pauta.action_url = f"{base_url}/api/v1/editorial/select?token={token}"
+
+    # 4. Render and Send HTML Email
     email_html = render_pautas_email_html(curadoria.pautas)
     google_svc = GoogleServicesClient()
     today_str = datetime.now().strftime("%d/%m/%Y")
-    subject = f"⚡ {len(curadoria.pautas)} Pautas de Conteúdo Selecionadas - {today_str}"
+    subject = f"⚡ 4 Pautas do Dia (2 TI & 2 Música) - {today_str}"
 
     google_svc.send_email(
         to_email=settings.ADMIN_EMAIL,
         subject=subject,
         html_body=email_html,
     )
-    logger.info("Editorial curation email successfully dispatched to %s", settings.ADMIN_EMAIL)
+    logger.info("Editorial curation email (4 pautas: TI & Música) dispatched to %s", settings.ADMIN_EMAIL)
 
+    total_articles = len(articles_ti) + len(articles_musica)
     final_result = {
         "status": "SUCCESS",
-        "total_articles_analyzed": len(articles),
+        "total_articles_analyzed": total_articles,
         "total_pautas_generated": len(curadoria.pautas),
         "pautas": [p.model_dump() for p in curadoria.pautas],
     }

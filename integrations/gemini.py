@@ -47,15 +47,20 @@ class FonteNoticia(BaseModel):
 
 class PautaEditorial(BaseModel):
     id: int = Field(description="ID numérico da pauta")
+    categoria: str = Field(
+        default="Tecnologia da Informação (TI)",
+        description="Categoria da pauta: 'Tecnologia da Informação (TI)' ou 'Música & Mercado Musical'",
+    )
     titulo: str = Field(description="Título jornalístico/editorial impactante e claro")
     angulo_editorial: str = Field(description="Tese ou gancho central que o artigo deve defender")
     fontes_relacionadas: List[FonteNoticia] = Field(description="Notícias que embasaram a pauta")
-    sintese_fiel_das_materias: str = Field(description="Resumo analítico estrito dos fatos e tribunais citados")
+    sintese_fiel_das_materias: str = Field(description="Resumo analítico estrito dos fatos e tribunais/cenários citados")
     topicos_para_redacao: List[str] = Field(description="Pontos estruturados para o redator seguir")
+    action_url: Optional[str] = Field(default=None, description="URL assinada de callback para gerar Blog + LinkedIn")
 
 
 class CuradoriaPautasResult(BaseModel):
-    pautas: List[PautaEditorial] = Field(description="Exatamente 2 pautas editoriais consolidadas")
+    pautas: List[PautaEditorial] = Field(description="Exatamente 4 pautas editoriais consolidadas (2 de TI e 2 de Música)")
 
 
 # ==============================================================================
@@ -90,14 +95,29 @@ class GeminiClient:
             temperature=0.2,
         )
 
-        response = self.client.models.generate_content(
-            model=model_name,
-            contents=prompt,
-            config=config,
-        )
+        models_to_try = [model_name]
+        for fallback in ["gemini-flash-latest", "gemini-2.5-flash-lite"]:
+            if fallback not in models_to_try:
+                models_to_try.append(fallback)
 
-        raw_text = response.text
-        if not raw_text:
-            raise ValueError("Gemini returned empty response")
+        last_error = None
+        for current_model in models_to_try:
+            for attempt in range(2):
+                try:
+                    response = self.client.models.generate_content(
+                        model=current_model,
+                        contents=prompt,
+                        config=config,
+                    )
+                    raw_text = response.text
+                    if raw_text:
+                        return response_model.model_validate_json(raw_text)
+                except Exception as e:
+                    last_error = e
+                    logger.warning("Gemini model %s attempt %d failed: %s. Trying next...", current_model, attempt + 1, e)
+                    import time
+                    time.sleep(2)
 
-        return response_model.model_validate_json(raw_text)
+        if last_error:
+            raise last_error
+        raise ValueError("Gemini returned empty response across all candidate models.")

@@ -113,3 +113,33 @@ class EvolutionClient:
             resp = await client.post(url, headers=self.headers, json=payload)
             resp.raise_for_status()
             return resp.json()
+
+    async def send_media_message(
+        self,
+        phone: str,
+        media_base64_or_url: str,
+        file_name: str,
+        caption: Optional[str] = None,
+        media_type: str = "document",
+        mime_type: str = "application/pdf",
+    ) -> Dict[str, Any]:
+        """
+        Sends media/document (like PDF proposals) via WhatsApp using Evolution API.
+        """
+        normalized = format_brazilian_phone(phone)
+        url = f"{self.base_url}/message/sendMedia/{self.instance}"
+        payload: Dict[str, Any] = {
+            "number": normalized,
+            "media": media_base64_or_url,
+            "mediatype": media_type,
+            "mimetype": mime_type,
+            "fileName": file_name,
+        }
+        if caption:
+            payload["caption"] = caption
+
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.post(url, headers=self.headers, json=payload)
+            resp.raise_for_status()
+            return resp.json()
+

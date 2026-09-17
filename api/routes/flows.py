@@ -81,3 +81,38 @@ def trigger_parallel_flow(payload: ParallelETLRequest, request: Request):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to dispatch parallel flow: {e}")
+
+
+@router.post("/whatsapp-eventos")
+def trigger_whatsapp_eventos(max_messages: int = 5):
+    """
+    Triggers the venue re-engagement prospecting flow via WhatsApp.
+    Identifies venues without upcoming gigs, validates phone numbers,
+    and sends polite follow-up messages with anti-spam jitter.
+    """
+    from flows.flow_whatsapp_eventos import task_reengajar_locais_eventos
+    task = task_reengajar_locais_eventos.delay(max_messages=max_messages)
+    return {
+        "status": "QUEUED",
+        "task_id": task.id,
+        "message": f"Whatsapp Eventos re-engagement task queued with max {max_messages} messages.",
+        "status_url": f"/api/v1/tasks/{task.id}",
+    }
+
+
+@router.post("/editorial-pautas")
+def trigger_editorial_pautas():
+    """
+    Triggers the daily editorial curation pipeline.
+    Collects trending AI & Legal Tech news from Google News RSS,
+    generates 2 structured editorial topics with Gemini AI, and dispatches via Gmail.
+    """
+    from flows.flow_editorial_pautas import task_daily_editorial_curation
+    task = task_daily_editorial_curation.delay()
+    return {
+        "status": "QUEUED",
+        "task_id": task.id,
+        "message": "Daily editorial curation task queued in Celery.",
+        "status_url": f"/api/v1/tasks/{task.id}",
+    }
+
