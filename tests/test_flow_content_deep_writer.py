@@ -417,6 +417,7 @@ def test_task_deep_content_generation():
 
     with patch("flows.flow_content_deep_writer.generate_deep_content_and_deliver") as mock_gen, \
          patch("storage.repository.repo.log_flow_start"), \
+         patch("storage.repository.repo.record_editorial_publication") as mock_record, \
          patch("storage.repository.repo.log_flow_complete"):
 
         mock_gen.return_value = {
@@ -427,6 +428,7 @@ def test_task_deep_content_generation():
         res = task_deep_content_generation(token_payload)
 
         assert res["status"] == "SUCCESS"
+        mock_record.assert_called_once()
         mock_gen.assert_called_once_with(
             pauta_titulo="Arquiteturas Escaláveis em Cloud",
             categoria="Tecnologia da Informação (TI)",
