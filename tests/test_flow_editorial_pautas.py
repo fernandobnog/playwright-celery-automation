@@ -109,7 +109,8 @@ def test_editorial_publications_repository(tmp_path):
     from storage.repository import PipelineRepository
 
     test_db = tmp_path / "test_repo.db"
-    repo_inst = PipelineRepository(db_path=str(test_db))
+    with patch("psycopg2.connect", side_effect=Exception("Disabled in test")):
+        repo_inst = PipelineRepository(db_path=str(test_db))
 
     assert repo_inst.get_recent_editorial_publications(days=7) == []
 

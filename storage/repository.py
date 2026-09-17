@@ -198,48 +198,61 @@ class PipelineRepository:
 
     def _backfill_editorial_publications(self, conn: sqlite3.Connection):
         """
-        Backfills successful deep_content_generation executions into editorial_publications
-        if the table is currently empty.
+        Backfills published articles from PostgreSQL (site-postgres public."Post")
+        into editorial_publications to ensure only truly published content is tracked.
         """
         try:
             cursor = conn.execute("SELECT COUNT(*) FROM editorial_publications")
             if cursor.fetchone()[0] > 0:
                 return
 
-            flow_cursor = conn.execute(
-                """
-                SELECT task_id, created_at, input_payload, output_payload
-                FROM flow_executions
-                WHERE flow_name = 'deep_content_generation' AND status = 'SUCCESS'
-                ORDER BY created_at ASC
-                """
-            )
-            rows = flow_cursor.fetchall()
-            for row in rows:
-                task_id = row["task_id"]
-                created_at = row["created_at"]
-                inp = json.loads(row["input_payload"]) if row["input_payload"] else {}
-                out = json.loads(row["output_payload"]) if row["output_payload"] else {}
+            db_url = getattr(settings, "CHECK_LINKS_POSTGRES_URL", "")
+            if not db_url:
+                return
 
-                tema = out.get("tema") or inp.get("pauta_titulo")
-                categoria = out.get("categoria") or inp.get("categoria") or "Tecnologia da Informação (TI)"
-                angulo = inp.get("angulo_editorial") or inp.get("contexto_adicional")
-                doc_id = out.get("doc_id")
-                doc_url = out.get("doc_url")
-
-                if tema:
-                    conn.execute(
+            import psycopg2
+            with psycopg2.connect(db_url) as pg_conn:
+                with pg_conn.cursor() as pg_cur:
+                    pg_cur.execute(
                         """
-                        INSERT OR IGNORE INTO editorial_publications
-                        (task_id, tema, categoria, angulo_editorial, doc_id, doc_url, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (task_id, tema, categoria, angulo, doc_id, doc_url, created_at),
+                        SELECT id, title, category, slug, "publishedAt", "createdAt"
+                        FROM "Post"
+                        WHERE published = true
+                        ORDER BY "createdAt" ASC
+                        """
                     )
+                    rows = pg_cur.fetchall()
+                    for r in rows:
+                        post_id, title, cat, slug, pub_at, cr_at = r
+                        cat_upper = (cat or "").upper()
+                        if "MUSICA" in cat_upper or "VIDA" in cat_upper:
+                            categoria = "Música & Mercado Musical"
+                        else:
+                            categoria = "Tecnologia da Informação (TI)"
+
+                        dt = pub_at or cr_at
+                        dt_str = dt.strftime("%Y-%m-%d %H:%M:%S") if hasattr(dt, "strftime") else str(dt)
+                        task_id = f"site_post_{post_id}"
+                        conn.execute(
+                            """
+                            INSERT OR IGNORE INTO editorial_publications
+                            (task_id, tema, categoria, angulo_editorial, doc_id, doc_url, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                task_id,
+                                title,
+                                categoria,
+                                f"Publicado no site ({slug})",
+                                None,
+                                f"https://www.fernandonogueira.dev.br/blog/{slug}",
+                                dt_str,
+                            ),
+                        )
             conn.commit()
-            logger.info("Successfully backfilled editorial_publications from past executions.")
+            logger.info("Successfully backfilled editorial_publications from real published posts in site-postgres.")
         except Exception as e:
-            logger.warning("Could not backfill editorial publications: %s", e)
+            logger.warning("Could not backfill editorial publications from site-postgres: %s", e)
 
     def record_editorial_publication(
         self,
