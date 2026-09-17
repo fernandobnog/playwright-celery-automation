@@ -72,6 +72,14 @@ class PipelineRepository:
                     is_success BOOLEAN,
                     dispatched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
+
+                CREATE TABLE IF NOT EXISTS network_link_status (
+                    link TEXT PRIMARY KEY,
+                    status TEXT,
+                    latency TEXT,
+                    last_checked TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_changed TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
             """)
             conn.commit()
 
@@ -150,6 +158,29 @@ class PipelineRepository:
                 VALUES (?, ?, ?, ?, ?)
                 """,
                 (task_id, webhook_url, status_code, response_body, is_success),
+            )
+            conn.commit()
+
+    def get_link_statuses(self) -> Dict[str, str]:
+        """Retrieves currently stored link statuses from local SQLite."""
+        with self._get_connection() as conn:
+            cursor = conn.execute("SELECT link, status FROM network_link_status")
+            return {row["link"]: row["status"] for row in cursor.fetchall()}
+
+    def update_link_status(self, link: str, status: str, latency: Optional[str] = None):
+        """Updates link status with timestamps in local SQLite."""
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO network_link_status (link, status, latency, last_checked, last_changed)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT(link) DO UPDATE SET
+                    status = excluded.status,
+                    latency = excluded.latency,
+                    last_checked = CURRENT_TIMESTAMP,
+                    last_changed = CASE WHEN network_link_status.status != excluded.status THEN CURRENT_TIMESTAMP ELSE network_link_status.last_changed END;
+                """,
+                (link, status, latency),
             )
             conn.commit()
 

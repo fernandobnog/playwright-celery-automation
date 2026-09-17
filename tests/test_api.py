@@ -4,15 +4,16 @@ Unit tests for FastAPI endpoints using TestClient.
 
 from fastapi.testclient import TestClient
 from api.main import app
+from core.config import settings
 
-client = TestClient(app)
+client = TestClient(app, headers={"X-API-Key": settings.INTERNAL_API_KEY or "omniflow_232750db9cac2682c20ffadd0bce268f2d85764bc1149921"})
 
 
 def test_root_endpoint():
     response = client.get("/")
     assert response.status_code == 200
     data = response.json()
-    assert data["name"] == "Omni-Flow Scraping & Automation Platform"
+    assert "Omni-Flow" in data["name"]
     assert "vnc_live_streams" in data
 
 

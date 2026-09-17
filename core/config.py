@@ -48,8 +48,35 @@ class Settings(BaseSettings):
     ENFORCE_INTERNAL_IP_ONLY: bool = True
     ALLOWED_CIDRS: str = "127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
     ENABLE_SSRF_PROTECTION: bool = True
-    MAX_REQUEST_SIZE_BYTES: int = 5 * 1024 * 1024  # 5MB
+    MAX_REQUEST_SIZE_BYTES: int = 5 * 1024 * 1024
     FLOWER_BASIC_AUTH: str | None = None
+
+    # Evolution API (WhatsApp)
+    EVOLUTION_API_URL: str = "http://evolution-api:8080"
+    EVOLUTION_API_KEY: str = ""
+    EVOLUTION_INSTANCE: str = "Fernando-Pessoal"
+    NOTIFICATION_PHONE: str = "5519998256557"
+
+    # Twenty CRM
+    TWENTY_CRM_URL: str = "http://twenty_server:3000/rest"
+    TWENTY_CRM_TOKEN: str = ""
+
+    # Google Gemini AI
+    GEMINI_API_KEY: str = ""
+
+    # Check Links Database
+    CHECK_LINKS_POSTGRES_URL: str = ""
+
+    # Google Services (OAuth2)
+    GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_CLIENT_SECRET: str = ""
+    GOOGLE_SHEETS_REFRESH_TOKEN: str = ""
+    GOOGLE_CALENDAR_REFRESH_TOKEN: str = ""
+    GOOGLE_CALENDAR_ID: str = "2ef2cov1mufpls2idco4svqj3s@group.calendar.google.com"
+    GMAIL_CLIENT_SECRET: str = ""
+    GMAIL_REFRESH_TOKEN: str = ""
+    ADMIN_EMAIL: str = "fernando.bnog@gmail.com"
+    LEAD_APPROVAL_SECRET: str = "omniflow_lead_approval_secret_key_2026"
 
     @property
     def allowed_cidrs_list(self) -> list[str]:

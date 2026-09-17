@@ -14,6 +14,7 @@ from api.routes import (
     ai_extract_router,
     flows_router,
     google_search_router,
+    leads_router,
     tasks_router,
     webhooks_router,
 )
@@ -106,6 +107,10 @@ app.include_router(
 app.include_router(
     google_search_router,
     dependencies=[Depends(verify_internal_api_key)],
+)
+app.include_router(
+    leads_router,
+    prefix="/api/v1",
 )
 
 

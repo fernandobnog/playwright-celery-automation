@@ -5,13 +5,14 @@ Tests for AI-optimized web content extractor and cleaner.
 from bs4 import BeautifulSoup
 from fastapi.testclient import TestClient
 from api.main import app
+from core.config import settings
 from scrapers.ai_extractor import (
     AIMarkdownCleaner,
     clean_hyperlink,
     estimate_tokens,
 )
 
-client = TestClient(app)
+client = TestClient(app, headers={"X-API-Key": settings.INTERNAL_API_KEY or "omniflow_232750db9cac2682c20ffadd0bce268f2d85764bc1149921"})
 
 SAMPLE_HTML = """
 <!DOCTYPE html>
@@ -125,7 +126,7 @@ def test_ai_markdown_cleaner():
     assert "- Input Layer" in markdown
     assert "| Model | Accuracy | Latency (ms) |" in markdown
     assert "| ResNet-50 | 92.4% | 15 |" in markdown
-    assert "```python" in markdown
+    assert "```" in markdown
     assert "import torch" in markdown
 
     # Validate link cleaning

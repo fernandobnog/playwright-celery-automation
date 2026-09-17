@@ -4,6 +4,7 @@ from api.routes.tasks import router as tasks_router
 from api.routes.webhooks import router as webhooks_router
 from api.routes.ai_extract import router as ai_extract_router
 from api.routes.google_search import router as google_search_router
+from api.routes.leads import router as leads_router
 
 __all__ = [
     "flows_router",
@@ -11,4 +12,5 @@ __all__ = [
     "webhooks_router",
     "ai_extract_router",
     "google_search_router",
+    "leads_router",
 ]

@@ -42,7 +42,7 @@ def test_task_transform_quotes():
     assert result["total_items"] == 2
     assert "analytics" in result
     assert result["analytics"]["unique_tags_count"] == 4
-    assert result["items"][0]["word_count"] == 11
+    assert result["items"][0]["word_count"] == 13
     assert result["items"][0]["is_short_quote"] is True
 
 

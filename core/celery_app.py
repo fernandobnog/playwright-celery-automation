@@ -52,10 +52,29 @@ celery_app.conf.update(
         "flows.tasks_etl.task_flow_failure_handler": {"queue": "flows"},
         "flows.tasks_ai_extract.task_ai_extract_url": {"queue": "scraping"},
         "flows.tasks_google_search.task_google_search": {"queue": "scraping"},
+        "flows.flow_link_monitor.task_check_network_links": {"queue": "flows"},
+        "flows.flow_lead_qualification.task_process_lead_qualification": {"queue": "flows"},
+        "flows.flow_editorial_pautas.task_daily_editorial_curation": {"queue": "flows"},
+        "flows.flow_calendar_sync.task_sync_sheets_to_calendar": {"queue": "flows"},
     },
 
     # Beat Periodic Schedules (Automations replacing n8n scheduled triggers)
     beat_schedule={
+        "check-links-nt-periodic": {
+            "task": "flows.flow_link_monitor.task_check_network_links",
+            "schedule": crontab(minute="*"),  # Every minute (Check Links NT)
+            "options": {"queue": "flows"},
+        },
+        "calendar-sync-periodic": {
+            "task": "flows.flow_calendar_sync.task_sync_sheets_to_calendar",
+            "schedule": crontab(minute="*/30"),  # Every 30 minutes (Add evento na agenda)
+            "options": {"queue": "flows"},
+        },
+        "daily-editorial-pautas-07am": {
+            "task": "flows.flow_editorial_pautas.task_daily_editorial_curation",
+            "schedule": crontab(hour=7, minute=0),  # Every day at 07:00 AM (Temas em alta)
+            "options": {"queue": "flows"},
+        },
         "daily-morning-quote-etl": {
             "task": "flows.example_flow.trigger_scheduled_quote_etl",
             "schedule": crontab(hour=8, minute=0),  # Everyday at 08:00 AM
@@ -75,6 +94,10 @@ celery_app.conf.update(
         "flows.tasks_google_search",
         "flows.example_flow",
         "flows.parallel_flow",
+        "flows.flow_link_monitor",
+        "flows.flow_lead_qualification",
+        "flows.flow_editorial_pautas",
+        "flows.flow_calendar_sync",
     ],
 )
 

@@ -1,0 +1,137 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" lang="pt-BR">
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pautas de Conteúdo</title>
+  <style type="text/css">
+    body, table, td, p, a { -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }
+    table, td { mso-table-lspace: 0pt; mso-table-rspace: 0pt; }
+    body { margin: 0; padding: 0; width: 100% !important; background-color: #f1f5f9; }
+  </style>
+</head>
+<body style="margin: 0; padding: 0; background-color: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+  <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #f1f5f9; table-layout: fixed;">
+    <tr>
+      <td align="center" style="padding: 32px 12px 40px 12px;">
+        <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0" style="max-width: 600px; text-align: left;">
+          
+          <!-- Banner Topo -->
+          <tr>
+            <td style="padding-bottom: 24px;">
+              <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #0f172a; border-radius: 12px; overflow: hidden;">
+                <tr>
+                  <td height="4" style="background-color: #4f46e5; line-height: 4px; font-size: 4px;">&nbsp;</td>
+                </tr>
+                <tr>
+                  <td style="padding: 26px 28px;">
+                    <span style="display: inline-block; background-color: rgba(255, 255, 255, 0.1); color: #93c5fd; font-size: 11px; font-weight: 700; letter-spacing: 1px; padding: 4px 10px; border-radius: 4px; text-transform: uppercase; margin-bottom: 8px;">
+                      ✦ Curadoria de Conteúdo
+                    </span>
+                    <h1 style="margin: 0 0 6px 0; color: #ffffff; font-size: 22px; font-weight: 800; line-height: 28px; letter-spacing: -0.4px;">
+                      Pautas Selecionadas
+                    </h1>
+                    <p style="margin: 0; color: #94a3b8; font-size: 14px; line-height: 20px;">
+                      {{ pautas|length }} pautas com síntese factual, fontes e tópicos de apoio para redação.
+                    </p>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Cards de Pautas -->
+          {% for pauta in pautas %}
+          <tr>
+            <td style="padding-bottom: 24px;">
+              <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #ffffff; border-radius: 10px; border: 1px solid #e2e8f0; box-shadow: 0 2px 4px rgba(15, 23, 42, 0.04);">
+                <tr>
+                  <td style="padding: 22px 24px;">
+                    <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0">
+                      
+                      <!-- Badge -->
+                      <tr>
+                        <td style="padding-bottom: 10px;">
+                          <span style="display: inline-block; background-color: #e0e7ff; color: #4338ca; font-size: 11px; font-weight: 800; letter-spacing: 0.8px; padding: 4px 10px; border-radius: 20px; text-transform: uppercase;">
+                            PAUTA #{{ loop.index }}
+                          </span>
+                        </td>
+                      </tr>
+
+                      <!-- Título -->
+                      <tr>
+                        <td style="padding-bottom: 14px;">
+                          <h2 style="margin: 0; color: #0f172a; font-size: 18px; line-height: 25px; font-weight: 700; letter-spacing: -0.3px;">
+                            {{ pauta.titulo }}
+                          </h2>
+                        </td>
+                      </tr>
+
+                      <!-- Ângulo Editorial -->
+                      <tr>
+                        <td style="padding-bottom: 14px;">
+                          <div style="border-left: 3px solid #cbd5e1; padding-left: 12px; color: #475569; font-size: 13px; line-height: 20px; font-style: italic;">
+                            <strong style="font-style: normal; color: #334155;">Tese / Ângulo:</strong> {{ pauta.angulo_editorial }}
+                          </div>
+                        </td>
+                      </tr>
+
+                      <!-- Síntese Factual -->
+                      <tr>
+                        <td style="background-color: #f8fafc; border-radius: 6px; padding: 14px 16px; color: #334155; font-size: 14px; line-height: 22px;">
+                          <div style="font-weight: 700; font-size: 12px; color: #64748b; text-transform: uppercase; margin-bottom: 6px; letter-spacing: 0.5px;">
+                            Síntese Factual
+                          </div>
+                          {{ pauta.sintese_fiel_das_materias }}
+                        </td>
+                      </tr>
+
+                      <!-- Tópicos para Redação -->
+                      <tr>
+                        <td style="padding-top: 14px;">
+                          <div style="font-weight: 700; font-size: 12px; color: #64748b; text-transform: uppercase; margin-bottom: 6px; letter-spacing: 0.5px;">
+                            Roteiro Sugerido
+                          </div>
+                          <ul style="margin: 0; padding-left: 20px; color: #334155; font-size: 13px; line-height: 20px;">
+                            {% for topico in pauta.topicos_para_redacao %}
+                            <li style="margin-bottom: 4px;">{{ topico }}</li>
+                            {% endfor %}
+                          </ul>
+                        </td>
+                      </tr>
+
+                      <!-- Fontes -->
+                      <tr>
+                        <td style="padding-top: 16px; border-top: 1px dashed #e2e8f0; margin-top: 14px;">
+                          <div style="font-weight: 700; font-size: 11px; color: #94a3b8; text-transform: uppercase; margin-bottom: 8px; letter-spacing: 0.5px;">
+                            Fontes e Matérias Base
+                          </div>
+                          {% for fonte in pauta.fontes_relacionadas %}
+                          <div style="font-size: 12px; color: #64748b; margin-bottom: 4px;">
+                            • [{{ fonte.data }}] <strong>{{ fonte.veiculo }}</strong>: {{ fonte.titulo_original }}
+                          </div>
+                          {% endfor %}
+                        </td>
+                      </tr>
+
+                    </table>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          {% endfor %}
+
+          <!-- Rodapé -->
+          <tr>
+            <td style="padding: 12px 8px; text-align: center; color: #94a3b8; font-size: 12px;">
+              Gerado automaticamente via <strong>Omni-Flow Python Engine</strong>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
