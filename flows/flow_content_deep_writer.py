@@ -834,6 +834,15 @@ def generate_deep_content_and_deliver(
     google_hub.docs.append_text(doc_id, doc_body)
     logger.info("Google Doc created and populated: %s", doc_url)
 
+    # Organize in Google Drive: place all editorial documents inside 'Editoriais' folder
+    editorial_folder_id = None
+    try:
+        editorial_folder_id = google_hub.drive.get_or_create_folder("Editoriais")
+        google_hub.drive.move_file(doc_id, editorial_folder_id)
+        logger.info("Organized Google Doc %s into Google Drive folder 'Editoriais' (ID: %s)", doc_id, editorial_folder_id)
+    except Exception as err_folder:
+        logger.warning("Could not organize Google Doc into 'Editoriais' folder: %s", err_folder)
+
     delivery_status = {"whatsapp": "SKIPPED", "email": "SKIPPED"}
 
     # 4. Dispatch notification via WhatsApp (Evolution API)
@@ -995,6 +1004,8 @@ def generate_deep_content_and_deliver(
         "status": "SUCCESS",
         "doc_id": doc_id,
         "doc_url": doc_url,
+        "folder_id": editorial_folder_id,
+        "folder_name": "Editoriais",
         "tema": result.tema_selecionado,
         "categoria": result.categoria,
         "total_fontes_analisadas": result.total_fontes_analisadas,

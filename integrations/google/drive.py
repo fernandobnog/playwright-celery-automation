@@ -99,6 +99,54 @@ class DriveService:
         logger.info("Created Drive folder '%s' (ID: %s)", folder_name, folder.get("id"))
         return folder
 
+    def get_or_create_folder(
+        self,
+        folder_name: str,
+        parent_folder_id: Optional[str] = None,
+    ) -> str:
+        """
+        Finds existing folder by name (under parent_folder_id if given) or creates it.
+        Returns the folder ID string.
+        """
+        escaped_name = folder_name.replace("'", "\\'")
+        q = f"name = '{escaped_name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+        if parent_folder_id:
+            q += f" and '{parent_folder_id}' in parents"
+
+        existing = self.list_files(query=q, page_size=1)
+        if existing:
+            folder_id = existing[0]["id"]
+            logger.info("Found existing Drive folder '%s' (ID: %s)", folder_name, folder_id)
+            return folder_id
+
+        created = self.create_folder(folder_name=folder_name, parent_folder_id=parent_folder_id)
+        return created["id"]
+
+    def move_file(
+        self,
+        file_id: str,
+        destination_folder_id: str,
+    ) -> Dict[str, Any]:
+        """
+        Moves a file into destination_folder_id by removing its current parents and adding destination_folder_id.
+        """
+        service = self._get_service()
+        file_meta = service.files().get(fileId=file_id, fields="parents").execute()
+        previous_parents = ",".join(file_meta.get("parents", []))
+
+        updated = (
+            service.files()
+            .update(
+                fileId=file_id,
+                addParents=destination_folder_id,
+                removeParents=previous_parents,
+                fields="id, name, parents",
+            )
+            .execute()
+        )
+        logger.info("Moved file %s to Drive folder %s", file_id, destination_folder_id)
+        return updated
+
     def upload_file(
         self,
         local_path: str,
