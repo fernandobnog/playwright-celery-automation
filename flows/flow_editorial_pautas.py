@@ -151,6 +151,7 @@ def task_daily_editorial_curation() -> Dict[str, Any]:
     # 3. Generate signed action tokens for one-click Blog + LinkedIn drafting
     from core.security import create_editorial_action_token
     base_url = "https://www.fernandonogueira.dev.br"
+    today_ymd = datetime.now().strftime("%Y%m%d")
     for pauta in curadoria.pautas:
         token = create_editorial_action_token(
             pauta_id=pauta.id,
@@ -158,6 +159,7 @@ def task_daily_editorial_curation() -> Dict[str, Any]:
             categoria=pauta.categoria,
             target_format="both",
             angulo_editorial=pauta.angulo_editorial,
+            curation_date=today_ymd,
         )
         pauta.action_url = f"{base_url}/api/v1/editorial/select?token={token}"
 

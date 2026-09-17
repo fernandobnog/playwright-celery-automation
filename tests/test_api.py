@@ -123,18 +123,71 @@ def test_editorial_select_endpoint_invalid_token():
 
 
 def test_editorial_select_endpoint_valid_token():
-    from unittest.mock import patch
+    from unittest.mock import MagicMock, patch
     from core.security import create_editorial_action_token
 
     token = create_editorial_action_token(
         pauta_id=2,
         pauta_titulo="O Mercado Musical em 2026",
         categoria="Música & Mercado Musical",
+        curation_date="20260999",
     )
     with patch("flows.flow_content_deep_writer.task_deep_content_generation.delay") as mock_delay:
         mock_delay.return_value.id = "mock-deep-task-789"
-        response = client.get(f"/api/v1/editorial/select?token={token}")
+        response = client.get(f"/api/v1/editorial/select?token={token}&force=true")
         assert response.status_code == 200
         assert "Tema Selecionado com Sucesso!" in response.text
         assert "O Mercado Musical em 2026" in response.text
         mock_delay.assert_called_once()
+
+
+def test_editorial_select_endpoint_duplicate_and_conflict():
+    from unittest.mock import MagicMock, patch
+    from core.security import create_editorial_action_token
+
+    token1 = create_editorial_action_token(
+        pauta_id=1,
+        pauta_titulo="Tema TI Único",
+        categoria="Tecnologia da Informação (TI)",
+        curation_date="20261231",
+    )
+    token2 = create_editorial_action_token(
+        pauta_id=2,
+        pauta_titulo="Tema Música Conflitante",
+        categoria="Música & Mercado Musical",
+        curation_date="20261231",
+    )
+
+    mock_redis = MagicMock()
+    mock_redis.get.return_value = None
+
+    with patch("api.routes.editorial._get_redis", return_value=mock_redis), \
+         patch("flows.flow_content_deep_writer.task_deep_content_generation.delay") as mock_delay:
+        mock_delay.return_value.id = "mock-deep-task-123"
+
+        # 1. First selection succeeds
+        resp1 = client.get(f"/api/v1/editorial/select?token={token1}")
+        assert resp1.status_code == 200
+        assert "Tema Selecionado com Sucesso!" in resp1.text
+        assert mock_delay.call_count == 1
+
+        # 2. Re-click same topic returns already in progress without calling celery again
+        import json
+        mock_redis.get.return_value = json.dumps({"pauta_id": 1, "pauta_titulo": "Tema TI Único", "categoria": "Tecnologia da Informação (TI)"})
+        resp_reclick = client.get(f"/api/v1/editorial/select?token={token1}")
+        assert resp_reclick.status_code == 200
+        assert "Tema Já Selecionado Anteriormente" in resp_reclick.text
+        assert mock_delay.call_count == 1  # Not called again!
+
+        # 3. Clicking a different topic returns conflict warning without calling celery
+        resp_conflict = client.get(f"/api/v1/editorial/select?token={token2}")
+        assert resp_conflict.status_code == 200
+        assert "Outro Tema Já Foi Selecionado Hoje" in resp_conflict.text
+        assert mock_delay.call_count == 1  # Still not called again!
+
+        # 4. Forcing replacement succeeds
+        resp_force = client.get(f"/api/v1/editorial/select?token={token2}&force=true")
+        assert resp_force.status_code == 200
+        assert "Tema Selecionado com Sucesso!" in resp_force.text
+        assert mock_delay.call_count == 2
+

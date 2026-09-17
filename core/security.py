@@ -356,6 +356,7 @@ def create_editorial_action_token(
     categoria: str,
     target_format: str = "both",
     angulo_editorial: Optional[str] = None,
+    curation_date: Optional[str] = None,
     expires_in_seconds: int = 172800,
 ) -> str:
     """
@@ -363,6 +364,7 @@ def create_editorial_action_token(
     Defaults to 48 hours validity.
     """
     import base64
+    from datetime import datetime
     import hashlib
     import hmac
     import json
@@ -373,6 +375,7 @@ def create_editorial_action_token(
         "pauta_titulo": pauta_titulo,
         "categoria": categoria,
         "target_format": target_format,
+        "curation_date": curation_date or datetime.now().strftime("%Y%m%d"),
         "exp": int(time.time()) + expires_in_seconds,
     }
     if angulo_editorial:
