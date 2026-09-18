@@ -21,6 +21,8 @@ celerybeat-schedule*
 # Data and browser profiles
 data/*.db
 data/browser_profile/
+data/*.png
+*.png
 downloads/*
 !downloads/.gitkeep
 

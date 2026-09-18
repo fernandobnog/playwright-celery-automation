@@ -11,6 +11,7 @@ Executes human-approved automated publication:
 from datetime import datetime
 import html
 import logging
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
@@ -170,9 +171,21 @@ def publish_reviewed_editorial(
         # 4.2 LinkedIn Pulse Article (if present)
         if package.linkedin_artigo_titulo and package.linkedin_artigo_corpo:
             try:
+                cover_image_path = None
+                possible_covers = [
+                    f"/app/data/og-{package.slug_blog}.png",
+                    f"/app/og-{package.slug_blog}.png",
+                    f"data/og-{package.slug_blog}.png",
+                ]
+                for p_path in possible_covers:
+                    if Path(p_path).exists():
+                        cover_image_path = str(p_path)
+                        break
+
                 pulse_res = linkedin_client.publish_pulse_article(
                     title=package.linkedin_artigo_titulo,
                     content_markdown=package.linkedin_artigo_corpo,
+                    image_path=cover_image_path,
                 )
                 publication_results["linkedin_pulse"] = pulse_res
             except Exception as e_pulse:

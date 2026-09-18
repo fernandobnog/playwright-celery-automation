@@ -345,84 +345,165 @@ class LinkedInPublisher:
         self,
         title: str,
         content_markdown: str,
+        image_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Publishes a long-form article to LinkedIn Pulse (https://www.linkedin.com/article/edit/).
+        Publishes a long-form article to LinkedIn Pulse (https://www.linkedin.com/article/new/).
+        Supports optional cover image upload, headline typing, body insertion into ProseMirror,
+        and final network distribution via the share modal.
         """
         logger.info("Starting LinkedIn Pulse article publication: '%s'", title)
         state_file = self.sync_session_from_redis_or_disk()
 
         with sync_playwright() as p:
             viewport = get_random_viewport()
-            user_agent = get_random_user_agent()
 
-            browser = p.chromium.launch(
-                headless=self.headless,
-                args=["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-dev-shm-usage"],
-            )
-            context_kwargs = {
-                "viewport": viewport,
-                "user_agent": user_agent,
-                "locale": "pt-BR",
-                "timezone_id": "America/Sao_Paulo",
-            }
-            if state_file:
-                context_kwargs["storage_state"] = state_file
+            browser = None
+            if settings.PLAYWRIGHT_USER_DATA_DIR and Path(settings.PLAYWRIGHT_USER_DATA_DIR).exists():
+                logger.info("Using persistent browser profile for Pulse from: %s", settings.PLAYWRIGHT_USER_DATA_DIR)
+                context = p.chromium.launch_persistent_context(
+                    user_data_dir=settings.PLAYWRIGHT_USER_DATA_DIR,
+                    headless=self.headless,
+                    args=["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-dev-shm-usage"],
+                    viewport=viewport,
+                    user_agent=PERSISTENT_USER_AGENT,
+                    locale="pt-BR",
+                    timezone_id="America/Sao_Paulo",
+                )
+            else:
+                browser = p.chromium.launch(
+                    headless=self.headless,
+                    args=["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-dev-shm-usage"],
+                )
+                context_kwargs = {
+                    "viewport": viewport,
+                    "user_agent": PERSISTENT_USER_AGENT,
+                    "locale": "pt-BR",
+                    "timezone_id": "America/Sao_Paulo",
+                }
+                if state_file:
+                    context_kwargs["storage_state"] = state_file
+                context = browser.new_context(**context_kwargs)
 
-            context = browser.new_context(**context_kwargs)
             context.add_init_script(STEALTH_EVASION_SCRIPT)
             page = context.new_page()
 
             try:
                 self.ensure_authenticated(page, context)
 
-                # Navigate to article editor
-                page.goto("https://www.linkedin.com/article/edit/", wait_until="domcontentloaded", timeout=self.timeout_ms)
+                # 1. Navigate to modern article editor
+                page.goto("https://www.linkedin.com/article/new/", wait_until="domcontentloaded", timeout=self.timeout_ms)
                 human_sleep(3.0, 4.5)
 
-                # Fill headline / title
-                title_loc = page.locator("textarea[aria-label*='headline'], textarea[placeholder*='Title'], textarea[placeholder*='Título']").first
-                if not title_loc.is_visible(timeout=5000):
-                    title_loc = page.locator("div[role='textbox'][aria-label*='Title'], div[role='textbox'][aria-label*='Título']").first
+                # 2. Optional: Upload cover image
+                if image_path and Path(image_path).exists():
+                    try:
+                        cover_btn = page.locator("button:has-text('Carregar do computador'), button:has-text('Upload from computer')").first
+                        if cover_btn.is_visible(timeout=4000):
+                            with page.expect_file_chooser(timeout=5000) as fc_info:
+                                cover_btn.click()
+                            file_chooser = fc_info.value
+                            file_chooser.set_files(image_path)
+                            human_sleep(2.5, 3.5)
 
-                if title_loc.is_visible(timeout=5000):
-                    title_loc.click()
-                    page.keyboard.insert_text(title.strip())
-                    human_sleep(1.0, 1.8)
+                            # Click modal Avançar / Salvar
+                            modal_apply = page.locator("div[role='dialog'] button:has-text('Avançar'), div.artdeco-modal button:has-text('Avançar')").first
+                            if modal_apply.is_visible(timeout=4000):
+                                modal_apply.click()
+                                human_sleep(2.0, 3.0)
+                                logger.info("Cover image attached to Pulse article: %s", image_path)
+                    except Exception as err_cover:
+                        logger.warning("Could not attach cover image to Pulse article (%s). Continuing with text...", err_cover)
 
-                # Fill article body
-                body_loc = page.locator("div[role='textbox'][data-placeholder*='Write'], div[role='textbox'][aria-label*='article body'], .article-editor__body-wrapper div[contenteditable='true']").first
-                if body_loc.is_visible(timeout=5000):
-                    body_loc.click()
-                    page.keyboard.insert_text(content_markdown.strip())
-                    human_sleep(1.5, 2.5)
+                # 3. Fill headline / title
+                title_selectors = [
+                    "textarea.article-editor-headline__textarea",
+                    "textarea[placeholder*='Título']",
+                    "textarea[placeholder*='Title']",
+                    "textarea[aria-label*='headline']",
+                ]
+                title_loc = None
+                for sel in title_selectors:
+                    loc = page.locator(sel).first
+                    if loc.is_visible(timeout=2000):
+                        title_loc = loc
+                        break
 
-                # Click Publish button
-                pub_btn = page.locator("button:has-text('Publish'), button:has-text('Publicar')").first
-                if pub_btn.is_visible(timeout=4000) and pub_btn.is_enabled():
-                    pub_btn.click()
-                    human_sleep(2.0, 3.5)
+                if not title_loc:
+                    shot_err = str(settings.downloads_path / "linkedin_pulse_title_err.png")
+                    page.screenshot(path=shot_err)
+                    raise RuntimeError(f"Could not find title field in article editor. Screenshot: {shot_err}")
 
-                    # Check for confirmation modal publish button
-                    confirm_btn = page.locator("div[role='dialog'] button:has-text('Publish'), div[role='dialog'] button:has-text('Publicar')").first
-                    if confirm_btn.is_visible(timeout=3000):
-                        confirm_btn.click()
-                        human_sleep(3.0, 5.0)
+                title_loc.click()
+                human_sleep(0.5, 1.0)
+                page.keyboard.insert_text(title.strip())
+                human_sleep(1.0, 2.0)
+
+                # 4. Clean and fill article body text into ProseMirror
+                body_lines = []
+                for line in content_markdown.splitlines():
+                    trimmed = line.strip()
+                    if trimmed.startswith("🖼️ Sugestão de Imagem") or trimmed.startswith("⏱️ Tempo de leitura"):
+                        continue
+                    body_lines.append(line)
+                clean_body = "\n".join(body_lines).strip()
+
+                body_loc = page.locator("div.ProseMirror p.article-editor-paragraph, div.ProseMirror[contenteditable='true']").first
+                if not body_loc.is_visible(timeout=4000):
+                    shot_err = str(settings.downloads_path / "linkedin_pulse_body_err.png")
+                    page.screenshot(path=shot_err)
+                    raise RuntimeError(f"Could not find body area in article editor. Screenshot: {shot_err}")
+
+                body_loc.click()
+                human_sleep(0.5, 1.0)
+                page.keyboard.insert_text(clean_body)
+                human_sleep(2.0, 3.5)
+
+                # 5. Click Avançar button (top right)
+                next_btn = page.locator("button.article-editor-nav__publish, button:has-text('Avançar'), button:has-text('Next')").first
+                if not next_btn.is_visible(timeout=5000) or not next_btn.is_enabled():
+                    shot_err = str(settings.downloads_path / "linkedin_pulse_next_err.png")
+                    page.screenshot(path=shot_err)
+                    raise RuntimeError("Avançar button not ready in article editor.")
+
+                next_btn.click()
+                human_sleep(3.0, 5.0)
+
+                # 6. In the post-sharing modal, add optional hook and click primary Publicar
+                share_input = page.locator("div[role='dialog'] div[role='textbox'], div[role='dialog'] div.ProseMirror").first
+                if share_input.is_visible(timeout=4000):
+                    share_input.click()
+                    share_hook = f"Compartilho meu novo artigo de liderança no LinkedIn: '{title.strip()}'. Leitura completa abaixo 👇"
+                    page.keyboard.insert_text(share_hook)
+                    human_sleep(1.0, 2.0)
+
+                # Click primary action publish button (not the audience settings button)
+                pub_btn = page.locator("button.share-actions__primary-action, div[role='dialog'] button.artdeco-button--primary:has-text('Publicar')").first
+                if not pub_btn.is_visible(timeout=5000) or not pub_btn.is_enabled():
+                    shot_err = str(settings.downloads_path / "linkedin_pulse_pub_err.png")
+                    page.screenshot(path=shot_err)
+                    raise RuntimeError("Final Publicar button not found or enabled in share dialog.")
+
+                pub_btn.click()
+                human_sleep(8.0, 12.0)
 
                 self.save_session_to_disk_and_redis(context)
                 shot_pulse = str(settings.downloads_path / f"linkedin_pulse_success_{int(time.time())}.png")
                 page.screenshot(path=shot_pulse)
 
-                logger.info("LinkedIn Pulse article published! Screenshot: %s", shot_pulse)
+                published_url = page.url
+                logger.info("LinkedIn Pulse article published! URL: %s | Screenshot: %s", published_url, shot_pulse)
                 return {
                     "status": "SUCCESS",
                     "channel": "linkedin_article",
+                    "url": published_url,
                     "published_at": datetime.now().isoformat(),
                     "screenshot": shot_pulse,
                 }
             finally:
                 context.close()
-                browser.close()
+                if browser:
+                    browser.close()
 
 
 linkedin_publisher = LinkedInPublisher()
