@@ -25,8 +25,8 @@ celery_app.conf.update(
 
     # Task execution settings
     task_track_started=True,
-    task_time_limit=300,        # Hard timeout: 5 minutes
-    task_soft_time_limit=240,   # Soft timeout: 4 minutes
+    task_time_limit=900,        # Hard timeout: 15 minutes
+    task_soft_time_limit=840,   # Soft timeout: 14 minutes
     result_expires=86400,       # Keep results for 24 hours
 
     # Concurrency and prefetching

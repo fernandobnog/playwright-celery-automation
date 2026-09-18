@@ -114,7 +114,11 @@ class GeminiClient:
                         return response_model.model_validate_json(raw_text)
                 except Exception as e:
                     last_error = e
+                    err_str = str(e).upper()
                     logger.warning("Gemini model %s attempt %d failed: %s. Trying next...", current_model, attempt + 1, e)
+                    # If model is overloaded (503 / UNAVAILABLE), immediately try next fallback model
+                    if "503" in err_str or "UNAVAILABLE" in err_str or "HIGH DEMAND" in err_str:
+                        break
                     import time
                     time.sleep(2)
 

@@ -109,7 +109,11 @@ def authenticate_linkedin(pin: str = None) -> bool:
                 human_sleep(0.4, 0.8)
 
             # Submit
-            submit_btn = page.locator("button:has-text('Entrar'):visible, button:has-text('Sign in'):visible, button[type='submit']:visible").first
+            submit_btn = page.get_by_role("button", name="Entrar", exact=True)
+            if not submit_btn.is_visible():
+                submit_btn = page.get_by_role("button", name="Sign in", exact=True)
+            if not submit_btn.is_visible():
+                submit_btn = page.locator("button[type='submit']:visible, button.btn__primary--large:visible").first
             if submit_btn.is_visible(timeout=5000):
                 submit_btn.click()
 

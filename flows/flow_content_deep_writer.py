@@ -1035,7 +1035,11 @@ def generate_deep_content_and_deliver(
     }
 
 
-@celery_app.task(name="flows.flow_content_deep_writer.task_deep_content_generation")
+@celery_app.task(
+    name="flows.flow_content_deep_writer.task_deep_content_generation",
+    time_limit=1800,
+    soft_time_limit=1700,
+)
 def task_deep_content_generation(token_payload: Dict[str, Any]) -> Dict[str, Any]:
     """
     Celery task triggered by the email button callback or manual dispatch.
