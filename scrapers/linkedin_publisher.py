@@ -87,28 +87,27 @@ class LinkedInPublisher:
         """Checks if current page has active LinkedIn authenticated session."""
         try:
             current_url = page.url.lower()
-            has_login_url = any(k in current_url for k in ["login", "checkpoint", "authwall", "challenge"])
-
-            # 1. Cookie validation if accessible
-            try:
-                cookies = page.context.cookies(["https://www.linkedin.com"])
-                if any(c.get("name") == "li_at" and len(c.get("value", "")) > 10 for c in cookies):
-                    if any(path in current_url for path in ["/feed", "/mynetwork", "/jobs", "/messaging", "/notifications", "/in/"]) or current_url.rstrip("/").endswith("linkedin.com"):
-                        return True
-            except Exception:
-                pass
-
-            if has_login_url:
+            if any(k in current_url for k in ["login", "checkpoint", "authwall", "challenge", "uas/"]):
                 return False
 
-            # 2. Check for standard authenticated elements (combined for faster query)
+            # 1. Check for standard authenticated elements
             feed_selectors = (
                 ".global-nav__me, button[aria-label*='profile'], button[aria-label*='perfil'], "
                 "div.feed-shared-update-v2, button:has-text('Start a post'), button:has-text('Começar publicação'), "
                 ".share-box-feed-entry__trigger, nav.global-nav, .feed-identity-module"
             )
-            if page.locator(feed_selectors).first.is_visible(timeout=1000):
+            if page.locator(feed_selectors).first.is_visible(timeout=2000):
                 return True
+
+            # 2. Path validation (ignoring query parameters like ?session_redirect=.../feed)
+            parsed_path = current_url.split("?")[0].rstrip("/")
+            try:
+                cookies = page.context.cookies(["https://www.linkedin.com"])
+                if any(c.get("name") == "li_at" and len(c.get("value", "")) > 10 for c in cookies):
+                    if any(parsed_path.endswith(path) for path in ["/feed", "/mynetwork", "/jobs", "/messaging", "/notifications", "/in"]):
+                        return True
+            except Exception:
+                pass
         except Exception:
             pass
         return False
