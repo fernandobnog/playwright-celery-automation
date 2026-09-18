@@ -20,6 +20,10 @@ from scrapers.stealth import STEALTH_EVASION_SCRIPT, get_random_user_agent, get_
 logger = logging.getLogger(__name__)
 
 REDIS_AUTH_KEY = "auth:linkedin_storage_state"
+PERSISTENT_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+)
 
 
 class LinkedInPublisher:
