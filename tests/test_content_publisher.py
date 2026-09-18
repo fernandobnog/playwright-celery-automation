@@ -147,7 +147,7 @@ def test_create_and_verify_editorial_publish_token():
     )
 
     assert isinstance(token, str)
-    assert "." in token
+    assert token.startswith("pub_")
 
     payload = verify_editorial_publish_token(token)
     assert payload is not None
@@ -158,11 +158,34 @@ def test_create_and_verify_editorial_publish_token():
     assert payload["doc_url"] == "https://docs.google.com/document/d/doc_12345_abc/edit"
 
 
+def test_create_and_verify_editorial_publish_token_hmac_fallback():
+    # Force Redis failure to test HMAC fallback token format
+    with patch("redis.Redis.from_url", side_effect=Exception("Redis offline")):
+        token = create_editorial_publish_token(
+            doc_id="doc_fallback_123",
+            pauta_titulo="Fallback HMAC Token",
+            categoria="TI",
+            doc_url="https://docs.google.com/document/d/doc_fallback_123/edit",
+            expires_in_seconds=3600,
+        )
+
+    assert isinstance(token, str)
+    assert "." in token
+
+    # Verification with Redis offline should still succeed using HMAC
+    with patch("redis.Redis.from_url", side_effect=Exception("Redis offline")):
+        payload = verify_editorial_publish_token(token)
+
+    assert payload is not None
+    assert payload["doc_id"] == "doc_fallback_123"
+    assert payload["pauta_titulo"] == "Fallback HMAC Token"
+
+
 def test_verify_editorial_publish_token_invalid_or_expired():
     assert verify_editorial_publish_token("") is None
     assert verify_editorial_publish_token("invalid.token.signature") is None
 
-    # Expired token
+    # Expired short token
     expired_token = create_editorial_publish_token(
         doc_id="doc_expired",
         pauta_titulo="Tema Expirado",

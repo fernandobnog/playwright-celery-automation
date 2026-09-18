@@ -445,13 +445,16 @@ def create_editorial_publish_token(
     expires_in_seconds: int = 259200,  # 3 days validity for review
 ) -> str:
     """
-    Generates a secure HMAC-signed token for approving and publishing reviewed Google Docs content.
+    Generates a secure token for approving and publishing reviewed Google Docs content.
+    Prioritizes short Redis-backed tokens (pub_<16chars>) to prevent WhatsApp link truncation.
+    Falls back to self-contained HMAC token if Redis is unreachable.
     """
     import base64
     import hashlib
     import hmac
     import json
     import time
+    from redis import Redis
 
     payload = {
         "action": "publish_phase1",
@@ -461,6 +464,17 @@ def create_editorial_publish_token(
         "doc_url": doc_url or f"https://docs.google.com/document/d/{doc_id}/edit",
         "exp": int(time.time()) + expires_in_seconds,
     }
+
+    # Attempt to generate and store a short token in Redis for WhatsApp safety
+    try:
+        redis_client = Redis.from_url(settings.REDIS_URL, decode_responses=True, socket_connect_timeout=2)
+        redis_client.ping()
+        short_token = f"pub_{secrets.token_urlsafe(12)}"
+        redis_client.set(f"editorial:publish_token:{short_token}", json.dumps(payload), ex=expires_in_seconds)
+        logger.info("Generated short publish token '%s' stored in Redis.", short_token)
+        return short_token
+    except Exception as err_redis:
+        logger.warning("Could not store short publish token in Redis (%s). Falling back to HMAC.", err_redis)
 
     raw_payload = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     b64_payload = base64.urlsafe_b64encode(raw_payload).decode("utf-8").rstrip("=")
@@ -473,7 +487,8 @@ def create_editorial_publish_token(
 
 def verify_editorial_publish_token(token: str) -> Optional[dict]:
     """
-    Validates the editorial publish token signature and expiration.
+    Validates the editorial publish token.
+    Supports both short Redis tokens (pub_...) and self-contained HMAC signed tokens.
     Returns payload dict or None.
     """
     import base64
@@ -481,12 +496,33 @@ def verify_editorial_publish_token(token: str) -> Optional[dict]:
     import hmac
     import json
     import time
+    from redis import Redis
 
-    if not token or "." not in token:
+    if not token:
+        return None
+
+    clean_token = token.strip()
+
+    # 1. Check Redis for short publish token (or any token cached in Redis)
+    if clean_token.startswith("pub_") or "." not in clean_token:
+        try:
+            redis_client = Redis.from_url(settings.REDIS_URL, decode_responses=True, socket_connect_timeout=2)
+            cached_data = redis_client.get(f"editorial:publish_token:{clean_token}")
+            if cached_data:
+                payload = json.loads(cached_data)
+                if payload.get("exp", 0) >= time.time():
+                    return payload
+                logger.warning("Short publish token '%s' in Redis has expired.", clean_token)
+                return None
+        except Exception as err_redis:
+            logger.warning("Failed to check Redis for short publish token: %s", err_redis)
+
+    # 2. Fallback: Self-contained HMAC signature verification
+    if "." not in clean_token:
         return None
 
     try:
-        b64_payload, signature = token.split(".", 1)
+        b64_payload, signature = clean_token.split(".", 1)
         secret = (settings.LEAD_APPROVAL_SECRET or "default_secret").encode("utf-8")
         expected_sig = hmac.new(secret, b64_payload.encode("utf-8"), hashlib.sha256).hexdigest()
 

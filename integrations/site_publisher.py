@@ -137,13 +137,54 @@ class SitePublisher:
         post_url = f"https://www.fernandonogueira.dev.br/blog/{final_slug}"
         logger.info("Article successfully published to site (ID: %s, URL: %s)", post_id, post_url)
 
+        # Trigger Zero-Fetch static compilation on host to make article immediately live
+        rebuild_result = {"status": "SKIPPED"}
+        if is_published:
+            rebuild_result = self.trigger_static_rebuild()
+
         return {
             "status": "SUCCESS",
             "post_id": post_id,
             "slug": final_slug,
             "url": post_url,
             "published_at": now.isoformat(),
+            "rebuild": rebuild_result,
         }
+
+    def trigger_static_rebuild(self) -> Dict[str, Any]:
+        """
+        Triggers the host's site-rebuild-daemon to sync published posts and recompile
+        the static Zero-Fetch HTML in dist/. Ensures newly published posts appear live immediately.
+        """
+        import requests
+
+        key = (
+            getattr(settings, "INTERNAL_GATEWAY_KEY", None)
+            or getattr(settings, "INTERNAL_API_KEY", None)
+            or "37e77cd994f94a5f3f8a183a28d4a14fd87f8a1c14933e31bd3f5bb7f118c78f"
+        )
+        headers = {"X-Internal-Gateway-Key": key}
+
+        # Endpoints matching possible host bridge gateway IPs
+        candidate_urls = [
+            "http://172.18.0.1:3002/api/rebuild",
+            "http://172.17.0.1:3002/api/rebuild",
+            "http://host.docker.internal:3002/api/rebuild",
+            "http://127.0.0.1:3002/api/rebuild",
+        ]
+
+        for url in candidate_urls:
+            try:
+                res = requests.post(url, headers=headers, timeout=60)
+                if res.status_code == 200:
+                    data = res.json()
+                    logger.info("Site static rebuild completed via %s: %s", url, data)
+                    return {"status": "SUCCESS", "details": data}
+            except Exception as err:
+                logger.debug("Rebuild attempt failed for %s: %s", url, err)
+
+        logger.warning("Could not trigger site static rebuild (daemon unreachable).")
+        return {"status": "SKIPPED", "message": "Rebuild daemon unreachable"}
 
 
 site_publisher = SitePublisher()
