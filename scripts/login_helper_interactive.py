@@ -19,7 +19,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("interactive_login")
 
 
-def run_interactive_login(timeout_seconds: int = 180):
+def run_interactive_login(timeout_seconds: int = 600):
     username = settings.LINKEDIN_USERNAME
     password = settings.LINKEDIN_PASSWORD
     if not username or not password:
@@ -72,15 +72,21 @@ def run_interactive_login(timeout_seconds: int = 180):
                 pass_loc.press("Enter")
 
             logger.info("Credentials submitted. Waiting for verification/feed on noVNC (port 6081)...")
-            logger.info("Open http://localhost:6081/vnc.html in your browser to solve the security check.")
+            logger.info("Open http://localhost:6081/vnc.html in your browser to solve any security challenge.")
 
             start_time = time.time()
+            last_report = 0
             while time.time() - start_time < timeout_seconds:
                 if linkedin_publisher.is_logged_in(page):
                     logger.info("🎉 SUCCESS: LinkedIn login confirmed and active!")
                     linkedin_publisher.save_session_to_disk_and_redis(context)
                     print("LINKEDIN_LOGIN_SUCCESS")
                     return True
+
+                elapsed = int(time.time() - start_time)
+                if elapsed - last_report >= 30:
+                    logger.info("Awaiting login on noVNC... (%d/%d seconds elapsed). Current URL: %s", elapsed, timeout_seconds, page.url)
+                    last_report = elapsed
 
                 time.sleep(2.0)
 

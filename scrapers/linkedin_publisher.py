@@ -87,10 +87,19 @@ class LinkedInPublisher:
         """Checks if current page has active LinkedIn authenticated session."""
         try:
             current_url = page.url.lower()
-            if "login" in current_url or "checkpoint" in current_url or "authwall" in current_url:
+            if "login" in current_url or "checkpoint" in current_url or "authwall" in current_url or "challenge" in current_url:
                 return False
 
-            # Check for standard authenticated elements
+            # 1. Cookie validation if accessible
+            try:
+                cookies = page.context.cookies(["https://www.linkedin.com"])
+                if any(c.get("name") == "li_at" and len(c.get("value", "")) > 10 for c in cookies):
+                    if any(path in current_url for path in ["/feed", "/mynetwork", "/jobs", "/messaging", "/notifications", "/in/"]):
+                        return True
+            except Exception:
+                pass
+
+            # 2. Check for standard authenticated elements
             feed_selectors = [
                 ".global-nav__me",
                 "button[aria-label*='profile']",
@@ -99,6 +108,8 @@ class LinkedInPublisher:
                 "button:has-text('Start a post')",
                 "button:has-text('Começar publicação')",
                 ".share-box-feed-entry__trigger",
+                "nav.global-nav",
+                ".feed-identity-module",
             ]
             for sel in feed_selectors:
                 if page.locator(sel).first.is_visible(timeout=2000):
