@@ -188,36 +188,48 @@ class LinkedInPublisher:
             viewport = get_random_viewport()
             user_agent = get_random_user_agent()
 
-            launch_kwargs = {
-                "headless": self.headless,
-                "args": [
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage",
-                ],
-            }
+            launch_args = [
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+            ]
+            std_ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 
-            browser = p.chromium.launch(**launch_kwargs)
+            browser = None
+            if settings.PLAYWRIGHT_USER_DATA_DIR and Path(settings.PLAYWRIGHT_USER_DATA_DIR).exists():
+                context = p.chromium.launch_persistent_context(
+                    user_data_dir=settings.PLAYWRIGHT_USER_DATA_DIR,
+                    headless=self.headless,
+                    args=launch_args,
+                    viewport={"width": 1280, "height": 850},
+                    user_agent=std_ua,
+                    locale="pt-BR",
+                    timezone_id="America/Sao_Paulo",
+                )
+                page = context.pages[0] if context.pages else context.new_page()
+            else:
+                browser = p.chromium.launch(headless=self.headless, args=launch_args)
+                context_kwargs = {
+                    "viewport": {"width": 1280, "height": 850},
+                    "user_agent": std_ua,
+                    "locale": "pt-BR",
+                    "timezone_id": "America/Sao_Paulo",
+                }
+                if state_file:
+                    context_kwargs["storage_state"] = state_file
+                context = browser.new_context(**context_kwargs)
+                page = context.new_page()
 
-            context_kwargs = {
-                "viewport": viewport,
-                "user_agent": user_agent,
-                "locale": "pt-BR",
-                "timezone_id": "America/Sao_Paulo",
-            }
-            if state_file:
-                context_kwargs["storage_state"] = state_file
-
-            context = browser.new_context(**context_kwargs)
             context.add_init_script(STEALTH_EVASION_SCRIPT)
-            page = context.new_page()
 
             try:
                 self.ensure_authenticated(page, context)
 
                 # 1. Click "Start a post" / "Começar publicação"
                 post_triggers = [
+                    "p:has-text('Começar publicação')",
+                    "div:has-text('Começar publicação')",
                     "button:has-text('Start a post')",
                     "button:has-text('Começar publicação')",
                     "button.share-box-feed-entry__trigger",
@@ -242,6 +254,8 @@ class LinkedInPublisher:
 
                 # 2. Wait for modal editor area
                 editor_selectors = [
+                    "div.tiptap.ProseMirror",
+                    "div[role='textbox']",
                     "div[role='textbox'][contenteditable='true']",
                     "div.editor-content div[contenteditable='true']",
                     "div.ql-editor",
@@ -324,7 +338,8 @@ class LinkedInPublisher:
 
             finally:
                 context.close()
-                browser.close()
+                if browser:
+                    browser.close()
 
     def publish_pulse_article(
         self,
