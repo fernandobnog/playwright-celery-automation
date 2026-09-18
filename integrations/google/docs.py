@@ -42,6 +42,36 @@ class DocsService:
         service = self._get_service()
         return service.documents().get(documentId=document_id).execute()
 
+    def extract_text_content(self, document_id: str) -> str:
+        """
+        Retrieves the Google Document and extracts its complete plain text content,
+        preserving paragraph breaks, table cell text, and headings.
+        """
+        doc = self.get_document(document_id)
+        return self._extract_text_from_elements(doc.get("body", {}).get("content", []))
+
+    def _extract_text_from_elements(self, elements: list) -> str:
+        text_parts = []
+        for element in elements:
+            if "paragraph" in element:
+                p_elements = element.get("paragraph", {}).get("elements", [])
+                for pe in p_elements:
+                    text_run = pe.get("textRun")
+                    if text_run and "content" in text_run:
+                        text_parts.append(text_run["content"])
+            elif "table" in element:
+                for row in element.get("table", {}).get("tableRows", []):
+                    row_parts = []
+                    for cell in row.get("tableCells", []):
+                        cell_text = self._extract_text_from_elements(cell.get("content", [])).strip()
+                        row_parts.append(cell_text)
+                    text_parts.append(" | ".join(row_parts) + "\n")
+            elif "tableOfContents" in element:
+                toc_elements = element.get("tableOfContents", {}).get("content", [])
+                text_parts.append(self._extract_text_from_elements(toc_elements))
+        return "".join(text_parts)
+
+
     def replace_text(
         self,
         document_id: str,

@@ -15,8 +15,9 @@ from fastapi.responses import HTMLResponse
 from redis import Redis
 
 from core.config import settings
-from core.security import verify_editorial_action_token
+from core.security import verify_editorial_action_token, verify_editorial_publish_token
 from flows.flow_content_deep_writer import task_deep_content_generation
+from flows.flow_content_publisher import task_publish_approved_editorial
 
 logger = logging.getLogger(__name__)
 
@@ -602,3 +603,169 @@ async def select_editorial_topic(
     return HTMLResponse(
         content=_render_success_html(escaped_title, escaped_cat, async_task.id)
     )
+
+
+def _render_publish_success_html(escaped_title: str, escaped_cat: str, task_id: str, doc_url: str) -> str:
+    theme = _get_category_theme(escaped_cat)
+    body = f"""
+    <div>
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
+            <span class="badge" style="background-color: {theme['badge_bg']}; color: {theme['badge_text']}; margin-bottom: 0;">
+                {theme['icon']} {escaped_cat}
+            </span>
+            <span style="font-size: 12px; color: #16a34a; font-weight: 700; display: inline-flex; align-items: center;">
+                <span class="pulse-dot"></span> Publicação em Andamento (ID: {task_id[:8]})
+            </span>
+        </div>
+
+        <h2 class="topic-title">
+            {escaped_title}
+        </h2>
+
+        <div class="callout">
+            <strong style="color: #0f172a;">Aprovação confirmada com sucesso!</strong>
+            O robô está extraindo o texto com as suas revisões do Google Docs e publicando automaticamente no <strong>Blog</strong> e no <strong>LinkedIn</strong>.
+        </div>
+
+        <!-- Etapas em Andamento -->
+        <div class="stepper">
+            <div class="step-item step-active">
+                <div class="step-icon">📄</div>
+                <div style="flex: 1;">
+                    <div style="font-weight: 700;">1. Extração do Google Docs</div>
+                    <div style="font-size: 11px; opacity: 0.85;">Baixando texto revisado pelo autor com fidelidade estrita</div>
+                </div>
+                <span class="pulse-dot" style="margin-left: auto;"></span>
+            </div>
+
+            <div class="step-item">
+                <div class="step-icon">🌐</div>
+                <div>
+                    <div style="font-weight: 700; color: #475569;">2. Publicação no Blog Oficial</div>
+                    <div style="font-size: 11px; color: #94a3b8;">Inserção direta no banco PostgreSQL (fernandonogueira.dev.br/blog)</div>
+                </div>
+            </div>
+
+            <div class="step-item">
+                <div class="step-icon">💼</div>
+                <div>
+                    <div style="font-weight: 700; color: #475569;">3. Postagem no LinkedIn</div>
+                    <div style="font-size: 11px; color: #94a3b8;">Chromium autenticado com sessão salva postando no Feed e Pulse</div>
+                </div>
+            </div>
+
+            <div class="step-item">
+                <div class="step-icon">📲</div>
+                <div>
+                    <div style="font-weight: 700; color: #475569;">4. Notificação de Conclusão</div>
+                    <div style="font-size: 11px; color: #94a3b8;">Aviso imediato no seu WhatsApp com os links no ar</div>
+                </div>
+            </div>
+        </div>
+
+        <div style="background-color: #f8fafc; border: 1px dashed #cbd5e1; border-radius: 8px; padding: 14px 16px; margin: 20px 0;">
+            <div style="font-size: 12px; color: #475569; line-height: 19px;">
+                ⏱️ <strong>Tempo estimado:</strong> ~20 a 40 segundos.<br>
+                Assim que a publicação for concluída, você receberá a notificação com os links diretos no seu celular.
+            </div>
+        </div>
+
+        <div style="display: flex; gap: 12px; margin-top: 20px; flex-wrap: wrap;">
+            <a href="https://www.fernandonogueira.dev.br/blog" target="_blank" class="btn" style="background-color: {theme['accent_btn']};">
+                🌐 Ver Blog no Ar &rarr;
+            </a>
+            <a href="https://www.linkedin.com/feed/" target="_blank" class="btn btn-outline">
+                💼 Abrir LinkedIn
+            </a>
+            <a href="{doc_url}" target="_blank" class="btn btn-outline">
+                📄 Ver Google Doc
+            </a>
+        </div>
+    </div>
+    """
+    return _render_page_wrapper(
+        top_bar_color="#16a34a",
+        tag_text="✦ Publicação Autorizada",
+        tag_color="#86efac",
+        title="Publicação Iniciada!",
+        subtitle=f"Despachando conteúdo aprovado para {escaped_cat}.",
+        body_content=body,
+    )
+
+
+@router.get("/publish", response_class=HTMLResponse)
+async def publish_approved_editorial_endpoint(
+    token: str = Query(..., description="Signed HMAC token from the WhatsApp or email publish button"),
+):
+    """
+    One-click callback endpoint triggered when clicking 'Aprovar e Publicar' after reviewing Google Docs.
+    Validates HMAC token, applies idempotency lock, and enqueues Phase 1 publication (Site + LinkedIn).
+    """
+    payload = verify_editorial_publish_token(token)
+    if not payload:
+        logger.warning("Invalid or expired editorial publish token presented.")
+        return HTMLResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content=_render_invalid_token_html(),
+        )
+
+    doc_id = payload.get("doc_id")
+    pauta_titulo = payload.get("pauta_titulo", "Artigo Editorial")
+    categoria = payload.get("categoria", "Tecnologia da Informação")
+    doc_url = payload.get("doc_url") or f"https://docs.google.com/document/d/{doc_id}/edit"
+
+    escaped_title = html.escape(pauta_titulo)
+    escaped_cat = html.escape(categoria)
+
+    # Idempotency lock per doc_id publication
+    redis_client = _get_redis()
+    redis_key = f"editorial:publish_locked:{doc_id}"
+
+    if redis_client:
+        try:
+            already_publishing = redis_client.get(redis_key)
+            if already_publishing:
+                logger.info("Publish already in progress for doc_id %s", doc_id)
+                theme = _get_category_theme(escaped_cat)
+                body = f"""
+                <div>
+                    <span class="badge" style="background-color: #dcfce7; color: #15803d;">
+                        ✓ Publicação Já em Execução
+                    </span>
+                    <h2 class="topic-title" style="margin-top: 6px;">{escaped_title}</h2>
+                    <p style="color: #475569; font-size: 13px; line-height: 20px;">
+                        A publicação deste artigo já foi solicitada e está sendo processada pelos robôs do Blog e do LinkedIn.
+                        Assim que terminar, os links serão enviados ao seu WhatsApp.
+                    </p>
+                    <div style="display: flex; gap: 12px; margin-top: 20px;">
+                        <a href="https://www.fernandonogueira.dev.br/blog" target="_blank" class="btn" style="background-color: {theme['accent_btn']};">
+                            🌐 Acessar Blog
+                        </a>
+                        <a href="{doc_url}" target="_blank" class="btn btn-outline">
+                            📄 Ver Google Doc
+                        </a>
+                    </div>
+                </div>
+                """
+                return HTMLResponse(
+                    content=_render_page_wrapper(
+                        top_bar_color=theme["top_bar"],
+                        tag_text="✦ Status da Publicação",
+                        tag_color=theme["tag_text"],
+                        title="Processamento em Andamento",
+                        subtitle="A ordem de publicação já havia sido recebida.",
+                        body_content=body,
+                    )
+                )
+
+            redis_client.set(redis_key, "1", ex=86400 * 2)
+        except Exception as err_lock:
+            logger.warning("Error with publish Redis lock: %s", err_lock)
+
+    logger.info("Editorial publish authorized for doc_id %s ('%s'). Queuing Celery pipeline...", doc_id, pauta_titulo)
+    async_task = task_publish_approved_editorial.delay(payload)
+
+    return HTMLResponse(
+        content=_render_publish_success_html(escaped_title, escaped_cat, async_task.id, doc_url)
+    )
+

@@ -843,6 +843,17 @@ def generate_deep_content_and_deliver(
     except Exception as err_folder:
         logger.warning("Could not organize Google Doc into 'Editoriais' folder: %s", err_folder)
 
+    # Generate signed approval token for one-click publishing after Google Docs review
+    from core.security import create_editorial_publish_token
+    publish_token = create_editorial_publish_token(
+        doc_id=doc_id,
+        pauta_titulo=result.tema_selecionado,
+        categoria=result.categoria,
+        doc_url=doc_url,
+    )
+    base_url = "https://www.fernandonogueira.dev.br"
+    publish_url = f"{base_url}/api/v1/editorial/publish?token={publish_token}"
+
     delivery_status = {"whatsapp": "SKIPPED", "email": "SKIPPED"}
 
     # 4. Dispatch notification via WhatsApp (Evolution API)
@@ -850,11 +861,12 @@ def generate_deep_content_and_deliver(
         try:
             import asyncio
             wpp_message = (
-                f"🚀 *Fernando, seu pacote editorial completo está pronto!*\n\n"
+                f"🚀 *Fernando, seu pacote editorial completo está pronto para revisão!*\n\n"
                 f"📌 *Tema:* {result.tema_selecionado}\n"
                 f"📂 *Categoria:* {result.categoria}\n"
                 f"🌐 *Pesquisa Web Autônoma:* {result.total_fontes_analisadas} fontes analisadas.\n\n"
-                f"📄 *Acesse o Google Doc para revisar e publicar:*\n{doc_url}\n\n"
+                f"📄 *1. Acesse o Google Doc para revisar e editar:*\n{doc_url}\n\n"
+                f"👉 *2. Quando terminar, publique em 1 clique (Blog + LinkedIn):*\n{publish_url}\n\n"
                 f"✨ *Pacote Completo Gerado (4 Canais):*\n"
                 f"• 📝 *Blog WordPress:* 800-1200 palavras com casos reais, Analogy Engine, framework e SEO\n"
                 f"• 💼 *LinkedIn:* Artigo Pulse (600-1100 pal.) + Post de Feed com gancho e emoji 👇\n"
@@ -893,11 +905,15 @@ def generate_deep_content_and_deliver(
                     </p>
                 </div>
 
-                <div style="margin: 22px 0; text-align: center;">
-                    <a href="{doc_url}" style="background-color: #ba2649; color: #ffffff; padding: 14px 28px; border-radius: 8px; text-decoration: none; font-weight: bold; display: inline-block; box-shadow: 0 4px 12px rgba(186,38,73,0.35);">
-                        📄 Abrir Pacote Completo no Google Docs &rarr;
+                <div style="margin: 22px 0; text-align: center; display: flex; justify-content: center; gap: 12px; flex-wrap: wrap;">
+                    <a href="{doc_url}" style="background-color: #2563eb; color: #ffffff; padding: 14px 24px; border-radius: 8px; text-decoration: none; font-weight: bold; display: inline-block;">
+                        📄 Abrir Pacote no Google Docs &rarr;
+                    </a>
+                    <a href="{publish_url}" style="background-color: #16a34a; color: #ffffff; padding: 14px 24px; border-radius: 8px; text-decoration: none; font-weight: bold; display: inline-block; box-shadow: 0 4px 12px rgba(22,163,74,0.35);">
+                        🚀 Aprovar e Publicar Agora &rarr;
                     </a>
                 </div>
+
 
                 {sources_html_items}
 
@@ -1004,6 +1020,7 @@ def generate_deep_content_and_deliver(
         "status": "SUCCESS",
         "doc_id": doc_id,
         "doc_url": doc_url,
+        "publish_url": publish_url,
         "folder_id": editorial_folder_id,
         "folder_name": "Editoriais",
         "tema": result.tema_selecionado,

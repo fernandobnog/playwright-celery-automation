@@ -78,6 +78,11 @@ class Settings(BaseSettings):
     ADMIN_EMAIL: str = "fernando.bnog@gmail.com"
     LEAD_APPROVAL_SECRET: str = "omniflow_lead_approval_secret_key_2026"
 
+    # LinkedIn & Shared Auth State
+    LINKEDIN_USERNAME: str = ""
+    LINKEDIN_PASSWORD: str = ""
+    AUTH_STATE_DIR: str = "/app/data/auth"
+
     @property
     def allowed_cidrs_list(self) -> list[str]:
         if not self.ALLOWED_CIDRS:
@@ -95,6 +100,13 @@ class Settings(BaseSettings):
         p = Path(self.DATA_DIR)
         p.mkdir(parents=True, exist_ok=True)
         return p
+
+    @property
+    def auth_state_path(self) -> Path:
+        p = Path(self.AUTH_STATE_DIR)
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
 
 
 settings = Settings()
