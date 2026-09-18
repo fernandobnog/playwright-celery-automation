@@ -553,3 +553,12 @@ def test_editorial_research_agent_google_rss_fallback():
 
         assert result["total_analisadas"] == 1
         assert result["fontes"][0].url == "https://g1.globo.com/musica/streaming-recorde"
+
+
+def test_editorial_research_agent_default_limits():
+    """Validates that EditorialResearchAgent defaults to 5 iterations and 6 max pages to scrape."""
+    mock_gemini = MagicMock()
+    agent = EditorialResearchAgent(gemini_client=mock_gemini)
+    assert agent.max_iterations == 5
+    assert agent.max_pages_to_scrape == 6
+

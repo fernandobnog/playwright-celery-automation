@@ -417,8 +417,8 @@ class EditorialResearchAgent:
         gemini_client: Optional[GeminiClient] = None,
         google_scraper: Optional[GoogleSearchScraper] = None,
         content_extractor: Optional[Any] = None,
-        max_iterations: int = 2,
-        max_pages_to_scrape: int = 4,
+        max_iterations: int = 5,
+        max_pages_to_scrape: int = 6,
     ):
         self.gemini = gemini_client or GeminiClient()
         self.google_scraper = google_scraper
