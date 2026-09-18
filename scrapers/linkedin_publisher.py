@@ -129,11 +129,21 @@ class LinkedInPublisher:
                 human_sleep(1.0, 2.0)
 
                 # Fill credentials
-                page.fill("input#username", settings.LINKEDIN_USERNAME)
-                human_sleep(0.3, 0.7)
-                page.fill("input#password", settings.LINKEDIN_PASSWORD)
+                user_loc = page.locator("input[type='email']:visible, input[name='session_key']:visible, input#username:visible").first
+                if user_loc.is_visible(timeout=5000):
+                    user_loc.click()
+                    user_loc.fill(settings.LINKEDIN_USERNAME)
                 human_sleep(0.4, 0.8)
-                page.click("button[type='submit']")
+
+                pass_loc = page.locator("input[type='password']:visible, input[name='session_password']:visible, input#password:visible").first
+                if pass_loc.is_visible(timeout=5000):
+                    pass_loc.click()
+                    pass_loc.fill(settings.LINKEDIN_PASSWORD)
+                human_sleep(0.4, 0.8)
+
+                submit_loc = page.locator("button:has-text('Entrar'):visible, button:has-text('Sign in'):visible, button[type='submit']:visible").first
+                if submit_loc.is_visible(timeout=5000):
+                    submit_loc.click()
 
                 page.wait_for_load_state("domcontentloaded", timeout=20000)
                 human_sleep(3.0, 5.0)
