@@ -256,6 +256,14 @@ class LinkedInPublisher:
             try:
                 self.ensure_authenticated(page, context)
 
+                # Organic warm-up scroll on feed before opening post modal
+                try:
+                    human_scroll(page, steps=2, min_distance=80, max_distance=220)
+                    page.mouse.wheel(0, -120)
+                    human_sleep(1.0, 2.0)
+                except Exception:
+                    pass
+
                 # 1. Click "Start a post" / "Começar publicação"
                 post_triggers = [
                     "p:has-text('Começar publicação')",
