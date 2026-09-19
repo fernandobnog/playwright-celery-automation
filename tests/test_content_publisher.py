@@ -315,8 +315,10 @@ def test_publish_reviewed_editorial_orchestration():
     assert res["slug"] == "ia-na-advocacia-2026"
     assert res["blog_url"] == "https://www.fernandonogueira.dev.br/blog/ia-na-advocacia-2026"
     assert res["publication_results"]["site"]["status"] == "SUCCESS"
-    assert res["publication_results"]["linkedin_feed"]["status"] == "SUCCESS"
+    assert res["publication_results"]["linkedin_feed"]["status"] == "SKIPPED"
     assert res["publication_results"]["linkedin_pulse"]["status"] == "SUCCESS"
+    mock_linkedin_pub.publish_feed_post.assert_not_called()
+    mock_linkedin_pub.publish_pulse_article.assert_called_once()
     mock_repo.record_editorial_publication.assert_called_once()
 
 

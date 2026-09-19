@@ -40,6 +40,7 @@ services:
       - ./entrypoint.sh:/entrypoint.sh:ro
       - shared_data:/app/data
       - downloads:/app/downloads
+      - /root/site/public:/root/site/public
     depends_on:
       redis:
         condition: service_healthy
@@ -102,6 +103,7 @@ services:
       - shared_data:/app/data
       - worker1_profile:/app/data/browser_profile # Persistent independent cookies/session
       - downloads:/app/downloads
+      - /root/site/public:/root/site/public
     depends_on:
       redis:
         condition: service_healthy
@@ -139,6 +141,7 @@ services:
       - shared_data:/app/data
       - worker2_profile:/app/data/browser_profile # Persistent independent cookies/session
       - downloads:/app/downloads
+      - /root/site/public:/root/site/public
     depends_on:
       redis:
         condition: service_healthy

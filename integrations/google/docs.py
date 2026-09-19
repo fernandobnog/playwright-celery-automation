@@ -5,7 +5,9 @@ and programmatic content generation.
 """
 
 import logging
-from typing import Any, Dict, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+import urllib.request
 from googleapiclient.discovery import build
 
 from integrations.google.auth import GoogleAuthManager
@@ -145,3 +147,46 @@ class DocsService:
         return service.documents().batchUpdate(
             documentId=document_id, body={"requests": requests}
         ).execute()
+
+    def download_first_inline_image(self, document_id: str, dest_path: str) -> Optional[str]:
+        """
+        Extracts the first inline image inserted in the Google Document (e.g. user pasted cover)
+        and saves it to dest_path. Returns dest_path if successfully downloaded, or None.
+        """
+        try:
+            doc = self.get_document(document_id)
+            inline_objects = doc.get("inlineObjects", {})
+            if not inline_objects:
+                logger.debug("No inlineObjects found in Google Doc %s", document_id)
+                return None
+
+            ordered_ids: List[str] = []
+            for element in doc.get("body", {}).get("content", []):
+                if "paragraph" in element:
+                    for pe in element.get("paragraph", {}).get("elements", []):
+                        inline_ref = pe.get("inlineObjectElement", {}).get("inlineObjectId")
+                        if inline_ref and inline_ref in inline_objects:
+                            ordered_ids.append(inline_ref)
+
+            target_ids = ordered_ids if ordered_ids else list(inline_objects.keys())
+            for obj_id in target_ids:
+                embedded_obj = inline_objects[obj_id].get("inlineObjectProperties", {}).get("embeddedObject", {})
+                img_props = embedded_obj.get("imageProperties", {})
+                content_uri = img_props.get("contentUri")
+                if content_uri:
+                    dest = Path(dest_path)
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    import httpx
+                    headers = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"}
+                    resp = httpx.get(content_uri, headers=headers, timeout=40.0, follow_redirects=True)
+                    if resp.status_code == 200 and len(resp.content) > 100:
+                        dest.write_bytes(resp.content)
+                        logger.info("Successfully downloaded inline cover image from Doc %s to %s (%d bytes)", document_id, dest, len(resp.content))
+                        return str(dest)
+                    else:
+                        logger.warning("Failed to fetch image from contentUri: HTTP %s", resp.status_code)
+        except Exception as exc:
+            logger.warning("Error attempting to download inline image from Doc %s: %s", document_id, exc)
+
+        return None
+

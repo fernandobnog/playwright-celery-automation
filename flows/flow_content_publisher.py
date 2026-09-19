@@ -219,9 +219,11 @@ def publish_reviewed_editorial(
     linkedin_pub: Optional[LinkedInPublisher] = None,
     evo: Optional[EvolutionClient] = None,
     skip_linkedin: bool = False,
+    publish_linkedin_feed: bool = False,
 ) -> Dict[str, Any]:
     """
     Coordinates extraction of edited Google Docs content and dispatches Phase 1 publication.
+    By default, publishes the long-form leadership article on LinkedIn Pulse (omitting redundant feed post).
     """
     google_hub = hub or GoogleHub()
     site_client = site_pub or site_publisher
@@ -269,21 +271,49 @@ def publish_reviewed_editorial(
         publication_results["site"] = {"status": "ERROR", "error": str(e)}
         blog_url = f"https://www.fernandonogueira.dev.br/blog/{package.slug_blog}"
 
-    # 4. Publish to LinkedIn (Feed & Pulse) via Playwright with shared storage state
+    # 4. Publish to LinkedIn via Playwright with shared storage state (Focus: Pulse Article)
     if not skip_linkedin:
-        # Resolve illustrative cover image (generated via FLUX or cached)
+        # Resolve illustrative cover image:
+        # Priority 1: Check if user pasted an image directly into the Google Doc during review
         cover_image_path = None
-        possible_covers = [
-            f"/app/data/og-{package.slug_blog}.png",
-            f"/root/site/public/og-{package.slug_blog}.png",
-            f"/app/og-{package.slug_blog}.png",
-            f"data/og-{package.slug_blog}.png",
-        ]
-        for p_path in possible_covers:
-            if Path(p_path).exists():
-                cover_image_path = str(p_path)
-                break
+        data_cover = f"/app/data/og-{package.slug_blog}.png"
+        site_cover = f"/root/site/public/og-{package.slug_blog}.png"
+        target_doc_cover = site_cover if Path("/root/site/public").exists() else data_cover
+        try:
+            extracted_doc_img = google_hub.docs.download_first_inline_image(
+                document_id=doc_id,
+                dest_path=target_doc_cover,
+            )
+            if extracted_doc_img:
+                cover_image_path = extracted_doc_img
+                # Also ensure image exists in both data and site/public
+                for alt_path in [data_cover, site_cover]:
+                    if alt_path != extracted_doc_img:
+                        try:
+                            alt_p = Path(alt_path)
+                            alt_p.parent.mkdir(parents=True, exist_ok=True)
+                            import shutil
+                            shutil.copyfile(extracted_doc_img, str(alt_p))
+                        except Exception:
+                            pass
+                logger.info("Found and downloaded user-provided cover image from Google Doc: %s", cover_image_path)
+        except Exception as e_doc_img:
+            logger.debug("No inline cover image in Google Doc (%s)", e_doc_img)
 
+        # Priority 2: Pre-existing cover file on disk
+        if not cover_image_path:
+            possible_covers = [
+                f"/root/site/public/og-{package.slug_blog}.png",
+                f"/app/data/og-{package.slug_blog}.png",
+                f"/app/og-{package.slug_blog}.png",
+                f"data/og-{package.slug_blog}.png",
+            ]
+            for p_path in possible_covers:
+                if Path(p_path).exists():
+                    cover_image_path = str(p_path)
+                    break
+
+        # Priority 3: Fallback on-the-fly generation if none provided
         if not cover_image_path:
             try:
                 from integrations.image_generator import image_generator
@@ -296,8 +326,8 @@ def publish_reviewed_editorial(
             except Exception as e_gen:
                 logger.warning("Could not generate on-the-fly cover image: %s", e_gen)
 
-        # 4.1 LinkedIn Feed Post
-        if package.linkedin_post_feed:
+        # 4.1 LinkedIn Feed Post (Disabled by default: publication focused exclusively on Pulse Article)
+        if publish_linkedin_feed and package.linkedin_post_feed:
             feed_text = package.linkedin_post_feed.strip()
             if blog_url and blog_url not in feed_text:
                 import re as re_feed
@@ -369,17 +399,21 @@ def publish_reviewed_editorial(
         try:
             import asyncio
             site_status_icon = "✅" if publication_results["site"].get("status") == "SUCCESS" else "⚠️"
-            linkedin_status_icon = "✅" if publication_results["linkedin_feed"].get("status") == "SUCCESS" else "⚠️"
+            pulse_status_icon = "✅" if publication_results["linkedin_pulse"].get("status") == "SUCCESS" else "⚠️"
 
             wpp_msg = (
                 f"🎉 *Fernando, seu conteúdo revisado foi publicado com sucesso!*\n\n"
                 f"📌 *Tema:* {package.titulo_blog}\n"
                 f"📂 *Categoria:* {package.categoria}\n\n"
                 f"{site_status_icon} *Artigo no Ar no Blog:*\n{blog_url}\n\n"
-                f"{linkedin_status_icon} *LinkedIn Feed:* Publicado com sucesso no perfil!\n"
             )
             if publication_results["linkedin_pulse"].get("status") == "SUCCESS":
-                wpp_msg += "✅ *LinkedIn Pulse:* Artigo publicado com sucesso!\n"
+                wpp_msg += f"{pulse_status_icon} *Artigo no LinkedIn Pulse:* Publicado com sucesso!\n"
+            elif publication_results["linkedin_pulse"].get("status") == "ERROR":
+                wpp_msg += f"⚠️ *Artigo no LinkedIn Pulse:* Falha na publicação automatizada.\n"
+
+            if publish_linkedin_feed and publication_results["linkedin_feed"].get("status") == "SUCCESS":
+                wpp_msg += "✅ *LinkedIn Feed:* Post publicado com sucesso no perfil!\n"
 
             wpp_msg += f"\n📄 *Documento Base:* {doc_url or f'https://docs.google.com/document/d/{doc_id}/edit'}"
 
