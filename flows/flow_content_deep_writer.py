@@ -15,6 +15,7 @@ Etapa D do Pipeline Editorial de fernandonogueira.dev.br:
 from datetime import datetime
 import html
 import logging
+from pathlib import Path
 import re
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote_plus, urlparse
@@ -736,8 +737,8 @@ def generate_deep_content_and_deliver(
         "   - Estrutura: Título H1 magnético, Introdução de 3-4 parágrafos (choque de realidade + paradoxo + tese), Seções H2 de Casos Reais (órgãos, tribunais, empresas ou escândalos reais, com erro e preço pago), Seções H2/H3 com Conceituação Acessível aplicando o Analogy Engine (Cavalo de Troia em PDF, cão farejador, estagiário sem CPF, etc.), Framework Aplicável (Tabela, Níveis de Maturidade 1 a 4, ou Checklist) e Conclusão centrada no elemento humano com arquétipo inspirador (ex: O Advogado Maestro) e frase de efeito.\n"
         "   - CITE OBRIGATORIAMENTE as fontes no corpo do texto com hiperlinks Markdown [Nome da Fonte](URL) e crie no final a seção '## Referências e Fontes Consultadas'.\n\n"
         "2. CANAL 2: LINKEDIN PULSE & FEED:\n"
-        "   - Artigo de Liderança LinkedIn Pulse (600 a 1100+ palavras): Título de impacto, subtítulo executivo, tempo de leitura, seções Markdown aprofundadas, citações e reflexão provocativa.\n"
-        "   - Post de Alta Performance para o Feed (Companion Post): Hook nas linhas 1-3 terminando obrigatoriamente com a linha de transição e o emoji '👇', parágrafos curtos de 1-2 linhas, marcadores visuais (❌, 🔹, 1️⃣), tradução para o mundo dos negócios (dinheiro/reputação/compliance), contraponto propositivo de governança, CTA provocativo para tomadores de decisão e 6 a 8 hashtags corporativas.\n\n"
+        "   - Artigo de Liderança LinkedIn Pulse (600 a 1100+ palavras): Título de impacto, subtítulo executivo, tempo de leitura, narrativa aprofundada com subtítulos temáticos H2/H3, citações ricas de fontes com links [Nome](URL) e conclusão provocativa. O corpo NÃO deve conter linhas separadoras ('---') nem repetir o título H1 principal.\n"
+        "   - Post de Alta Performance para o Feed (Companion Post): Hook nas linhas 1-3 terminando com a linha de transição e o emoji '👇', parágrafos curtos de 1-2 linhas, marcadores visuais (❌, 🔹, 1️⃣), tradução de valor de negócios, contraponto propositivo, CTA provocativo, convite com link para o blog antes do bloco de 6 a 8 hashtags corporativas. NUNCA inclua traços ou linhas de separação ('---').\n\n"
         "3. CANAL 3: MATERIAL PARA INSTAGRAM:\n"
         "   - Legenda para Post/Carrossel: Primeira linha com emoji em CAIXA ALTA, tópicos com 👉, 🚨, 🔍, e CTA clara para arrastar/salvar/compartilhar.\n"
         "   - 10 a 14 hashtags estratégicas equilibradas.\n"
@@ -855,6 +856,7 @@ def generate_deep_content_and_deliver(
     publish_url = f"{base_url}/api/v1/editorial/publish?token={publish_token}"
 
     # 3.5 Generate illustrative artwork via FLUX (zero-text, pure visual metaphor)
+    clean_slug = getattr(result.blog.seo, "slug_sugerido", None) or clean_title.lower().replace(" ", "-")
     generated_cover_path = None
     try:
         from integrations.image_generator import image_generator
@@ -896,11 +898,11 @@ def generate_deep_content_and_deliver(
                 f"🔗 *Google Docs:* {doc_url}\n\n"
                 f"🎯 *Para Publicar Direto (após sua revisão):*\n"
                 f"{publish_url}\n\n"
-                f"✨ *Canais Prontos no Google Docs:*\n"
+                f"✨ *Pacote Completo Gerado (4 Canais):*\n"
                 f"• 📝 *Blog WordPress:* 800-1200 palavras com casos reais, Analogy Engine, framework e SEO\n"
                 f"• 💼 *LinkedIn:* Artigo Pulse (600-1100 pal.) + Post de Feed com gancho e emoji 👇\n"
                 f"• 📸 *Instagram:* Legenda de Carrossel + Roteiro Reels (45-55s em tabela)\n"
-                f"• 🎨 *Arte Conceitual:* Ilustração editorial de alto impacto sem textos"
+                f"• 🎨 *Prompts de Imagem / Arte Conceitual:* Ilustração editorial de alto impacto sem textos"
             )
 
             # Send with media if generated

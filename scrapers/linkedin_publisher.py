@@ -8,13 +8,15 @@ from datetime import datetime
 import json
 import logging
 from pathlib import Path
+import re
 import time
 from typing import Any, Dict, Optional
+import markdown
 from playwright.sync_api import BrowserContext, Page, sync_playwright
 from redis import Redis
 
 from core.config import settings
-from scrapers.humanizer import human_click, human_sleep
+from scrapers.humanizer import human_click, human_scroll, human_sleep
 from scrapers.stealth import STEALTH_EVASION_SCRIPT, get_random_user_agent, get_random_viewport
 
 logger = logging.getLogger(__name__)
@@ -24,6 +26,49 @@ PERSISTENT_USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 )
+
+
+def markdown_to_linkedin_pulse_html(md_text: str, blog_url: Optional[str] = None) -> str:
+    """
+    Converts raw Markdown from the editorial pipeline into clean, semantic HTML
+    specifically structured for LinkedIn Pulse's ProseMirror editor.
+    Strips raw divider lines, repeated H1 titles, metadata lines, and formats
+    subtitles, headings (H3), bold/italic, lists, and interactive anchor tags (<a href>).
+    """
+    lines = []
+    skip_header = True
+    for line in md_text.splitlines():
+        trimmed = line.strip()
+        # Strip divider lines (e.g. -------------------- or ====================)
+        if re.match(r'^[=\-_\*]{3,}$', trimmed):
+            continue
+        if trimmed.startswith("CANAL ") or "ARTIGO COMPLETO" in trimmed:
+            continue
+        if trimmed.startswith("⏱️") or trimmed.startswith("🖼️"):
+            continue
+        # Strip leading # Title and *Subtitle* if repeated at the top of the body
+        if skip_header and (trimmed.startswith("# ") or trimmed.startswith("*")):
+            continue
+        if trimmed:
+            skip_header = False
+        lines.append(line)
+
+    cleaned_md = "\n".join(lines).strip()
+
+    # In LinkedIn Pulse, H3 is the primary section heading
+    cleaned_md = re.sub(r"^#\s+", "### ", cleaned_md, flags=re.MULTILINE)
+    cleaned_md = re.sub(r"^##\s+", "### ", cleaned_md, flags=re.MULTILINE)
+
+    html_output = markdown.markdown(cleaned_md, extensions=["extra", "sane_lists"])
+
+    # Ensure blog CTA link is present at the end
+    if blog_url and blog_url not in html_output:
+        html_output += (
+            f"<p>Confira também o ensaio completo e referências técnicas detalhadas em meu blog:<br>"
+            f'<a href="{blog_url}">{blog_url}</a></p>'
+        )
+
+    return html_output
 
 
 class LinkedInPublisher:
@@ -322,8 +367,21 @@ class LinkedInPublisher:
                 editor.click()
                 human_sleep(0.5, 1.0)
 
+                # Clean text: strip raw divider lines, trailing CANAL headers, and markdown asterisks
+                clean_feed_lines = []
+                for line in text.splitlines():
+                    trimmed = line.strip()
+                    if re.match(r'^[=\-_\*]{3,}$', trimmed):
+                        continue
+                    if trimmed.startswith("CANAL "):
+                        continue
+                    clean_feed_lines.append(line)
+                clean_feed_text = "\n".join(clean_feed_lines).strip()
+                clean_feed_text = re.sub(r'\*\*([^*]+)\*\*', r'\1', clean_feed_text)
+                clean_feed_text = re.sub(r'(?<!\w)\*([^*]+)\*(?!\w)', r'\1', clean_feed_text)
+
                 # Insert the text smoothly preserving line breaks and emojis
-                page.keyboard.insert_text(text.strip())
+                page.keyboard.insert_text(clean_feed_text)
                 human_sleep(1.0, 2.0)
 
                 # 3. Handle optional image upload
@@ -401,10 +459,11 @@ class LinkedInPublisher:
         title: str,
         content_markdown: str,
         image_path: Optional[str] = None,
+        blog_url: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Publishes a long-form article to LinkedIn Pulse (https://www.linkedin.com/article/new/).
-        Supports optional cover image upload, headline typing, body insertion into ProseMirror,
+        Supports optional cover image upload, headline typing, rich HTML body insertion into ProseMirror,
         and final network distribution via the share modal.
         """
         logger.info("Starting LinkedIn Pulse article publication: '%s'", title)
@@ -501,14 +560,8 @@ class LinkedInPublisher:
                 page.keyboard.insert_text(title.strip())
                 human_sleep(1.0, 2.0)
 
-                # 4. Clean and fill article body text into ProseMirror
-                body_lines = []
-                for line in content_markdown.splitlines():
-                    trimmed = line.strip()
-                    if trimmed.startswith("🖼️ Sugestão de Imagem") or trimmed.startswith("⏱️ Tempo de leitura"):
-                        continue
-                    body_lines.append(line)
-                clean_body = "\n".join(body_lines).strip()
+                # 4. Clean and fill article body text into ProseMirror using rich HTML
+                article_html = markdown_to_linkedin_pulse_html(content_markdown, blog_url)
 
                 body_loc = None
                 body_selectors = [
@@ -537,7 +590,26 @@ class LinkedInPublisher:
 
                 body_loc.click()
                 human_sleep(0.5, 1.0)
-                page.keyboard.insert_text(clean_body)
+
+                # Clear default paragraph
+                page.keyboard.press("Control+A")
+                human_sleep(0.2, 0.4)
+                page.keyboard.press("Backspace")
+                human_sleep(0.4, 0.8)
+
+                # Paste rich HTML cleanly into ProseMirror
+                page.evaluate('''html => {
+                    const editor = document.querySelector('div.ProseMirror');
+                    const dt = new DataTransfer();
+                    dt.setData('text/html', html);
+                    dt.setData('text/plain', (new DOMParser()).parseFromString(html, 'text/html').body.innerText);
+                    const pasteEvent = new ClipboardEvent('paste', {
+                        bubbles: true,
+                        cancelable: true,
+                        clipboardData: dt
+                    });
+                    editor.dispatchEvent(pasteEvent);
+                }''', article_html)
                 human_sleep(2.0, 3.5)
 
                 # 5. Click Avançar button (top right)

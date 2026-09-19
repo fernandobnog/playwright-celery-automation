@@ -89,6 +89,30 @@ def parse_reviewed_doc_content(
         else:
             feed_post = c1_text
 
+        # Clean feed_post of trailing divider lines and section headers
+        if feed_post:
+            clean_feed_lines = []
+            for line in feed_post.splitlines():
+                trimmed = line.strip()
+                if re.match(r'^[=\-_\*]{3,}$', trimmed):
+                    continue
+                if trimmed.startswith("CANAL "):
+                    continue
+                clean_feed_lines.append(line)
+            feed_post = "\n".join(clean_feed_lines).strip()
+
+        # Clean pulse_body of leading/trailing divider lines and metadata
+        if pulse_body:
+            clean_pulse_lines = []
+            for line in pulse_body.splitlines():
+                trimmed = line.strip()
+                if re.match(r'^[=\-_\*]{3,}$', trimmed):
+                    continue
+                if trimmed.startswith("CANAL ") or "ARTIGO COMPLETO" in trimmed:
+                    continue
+                clean_pulse_lines.append(line)
+            pulse_body = "\n".join(clean_pulse_lines).strip()
+
         # Parse Blog article from Canal 2
         blog_title, blog_body = None, None
         for line in c2_text.splitlines():
@@ -274,6 +298,24 @@ def publish_reviewed_editorial(
 
         # 4.1 LinkedIn Feed Post
         if package.linkedin_post_feed:
+            feed_text = package.linkedin_post_feed.strip()
+            if blog_url and blog_url not in feed_text:
+                import re as re_feed
+                hashtag_match = re_feed.search(r'((?:#\w+\s*)+)$', feed_text)
+                if hashtag_match:
+                    before_hash = feed_text[:hashtag_match.start()].strip()
+                    hashes = hashtag_match.group(1).strip()
+                    feed_text = (
+                        f"{before_hash}\n\n"
+                        f"Confira o ensaio completo e as tendências de mercado no blog:\n{blog_url}\n\n"
+                        f"{hashes}"
+                    )
+                else:
+                    feed_text = (
+                        f"{feed_text}\n\n"
+                        f"Confira o ensaio completo e as tendências de mercado no blog:\n{blog_url}"
+                    )
+
             feed_image_path = None
             for p_path in [
                 f"/app/data/square-{package.slug_blog}.png",
@@ -286,7 +328,7 @@ def publish_reviewed_editorial(
 
             try:
                 feed_res = linkedin_client.publish_feed_post(
-                    text=package.linkedin_post_feed,
+                    text=feed_text,
                     image_path=feed_image_path or cover_image_path,
                 )
                 publication_results["linkedin_feed"] = feed_res
@@ -301,6 +343,7 @@ def publish_reviewed_editorial(
                     title=package.linkedin_artigo_titulo,
                     content_markdown=package.linkedin_artigo_corpo,
                     image_path=cover_image_path,
+                    blog_url=blog_url,
                 )
                 publication_results["linkedin_pulse"] = pulse_res
             except Exception as e_pulse:
