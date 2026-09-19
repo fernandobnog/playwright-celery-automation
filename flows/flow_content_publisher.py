@@ -63,7 +63,61 @@ def parse_reviewed_doc_content(
 ) -> ReviewedContentPackage:
     """
     Parses the raw Google Docs text, preserving all human revisions with zero hallucination.
+    First attempts deterministic template parsing for absolute fidelity. Falls back to Gemini.
     """
+    import re
+
+    # Try deterministic extraction first (covers human edits inside standard channel blocks)
+    c1_match = re.search(r'CANAL 1:[^\n]*\n(.*?)(?=CANAL 2:|$)', raw_doc_text, re.DOTALL | re.IGNORECASE)
+    c2_match = re.search(r'CANAL 2:[^\n]*\n(.*?)(?=CANAL 3:|$)', raw_doc_text, re.DOTALL | re.IGNORECASE)
+
+    if c1_match and c2_match:
+        c1_text = c1_match.group(1).strip()
+        c2_text = c2_match.group(1).strip()
+
+        # Parse Pulse article & Feed post from Canal 1
+        feed_split = re.split(r'---\s*\[POST DE ALTA PERFORMANCE.*?\]\s*---', c1_text, flags=re.IGNORECASE)
+        pulse_title, pulse_body, feed_post = None, None, None
+        if len(feed_split) > 1:
+            pulse_raw = feed_split[0].strip()
+            feed_post = feed_split[1].strip()
+            for line in pulse_raw.splitlines():
+                if line.startswith("# "):
+                    pulse_title = line.replace("# ", "").strip()
+                    break
+            pulse_body = pulse_raw
+        else:
+            feed_post = c1_text
+
+        # Parse Blog article from Canal 2
+        blog_title, blog_body = None, None
+        for line in c2_text.splitlines():
+            if line.startswith("# ") and not blog_title:
+                blog_title = line.replace("# ", "").strip()
+                break
+        blog_body = c2_text
+
+        effective_title = blog_title or default_pauta_titulo
+        # Derive slug safely
+        clean_slug = re.sub(r'[^a-zA-Z0-9\s-]', '', effective_title.lower())
+        clean_slug = re.sub(r'[\s]+', '-', clean_slug).strip('-')[:50]
+
+        logger.info("Successfully extracted multichannel doc content via deterministic template parser.")
+        return ReviewedContentPackage(
+            titulo_blog=effective_title,
+            subtitulo_blog=f"Artigo editorial sobre {effective_title}",
+            slug_blog=clean_slug,
+            corpo_blog_markdown=blog_body or raw_doc_text,
+            meta_description=f"Confira a análise sobre {effective_title}.",
+            categoria=default_categoria,
+            tags=["Editorial", default_categoria],
+            tempo_leitura_minutos=5,
+            linkedin_post_feed=feed_post or "",
+            linkedin_artigo_titulo=pulse_title,
+            linkedin_artigo_corpo=pulse_body,
+        )
+
+    # Fallback to Gemini structured extraction if doc structure deviates
     gemini = gemini_client or GeminiClient()
 
     prompt = (
@@ -84,7 +138,6 @@ def parse_reviewed_doc_content(
         return package
     except Exception as e:
         logger.warning("Gemini parsing failed (%s). Using fallback plain text parser.", e)
-        # Fallback to basic extraction if Gemini call encounters an issue
         return ReviewedContentPackage(
             titulo_blog=default_pauta_titulo,
             subtitulo_blog=f"Artigo editorial sobre {default_pauta_titulo}",
@@ -149,6 +202,7 @@ def publish_reviewed_editorial(
             tags=package.tags,
             read_time=package.tempo_leitura_minutos,
             slug=package.slug_blog,
+            cover_image=f"/og-{package.slug_blog}.png",
         )
         publication_results["site"] = site_res
         blog_url = site_res.get("url")
@@ -159,10 +213,48 @@ def publish_reviewed_editorial(
 
     # 4. Publish to LinkedIn (Feed & Pulse) via Playwright with shared storage state
     if not skip_linkedin:
+        # Resolve illustrative cover image (generated via FLUX or cached)
+        cover_image_path = None
+        possible_covers = [
+            f"/app/data/og-{package.slug_blog}.png",
+            f"/root/site/public/og-{package.slug_blog}.png",
+            f"/app/og-{package.slug_blog}.png",
+            f"data/og-{package.slug_blog}.png",
+        ]
+        for p_path in possible_covers:
+            if Path(p_path).exists():
+                cover_image_path = str(p_path)
+                break
+
+        if not cover_image_path:
+            try:
+                from integrations.image_generator import image_generator
+                cover_image_path = image_generator.generate_image(
+                    prompt=package.titulo_blog,
+                    slug=package.slug_blog,
+                    format_type="16:9",
+                    category=package.categoria,
+                )
+            except Exception as e_gen:
+                logger.warning("Could not generate on-the-fly cover image: %s", e_gen)
+
         # 4.1 LinkedIn Feed Post
         if package.linkedin_post_feed:
+            feed_image_path = None
+            for p_path in [
+                f"/app/data/square-{package.slug_blog}.png",
+                f"/root/site/public/square-{package.slug_blog}.png",
+                cover_image_path,
+            ]:
+                if p_path and Path(p_path).exists():
+                    feed_image_path = str(p_path)
+                    break
+
             try:
-                feed_res = linkedin_client.publish_feed_post(text=package.linkedin_post_feed)
+                feed_res = linkedin_client.publish_feed_post(
+                    text=package.linkedin_post_feed,
+                    image_path=feed_image_path or cover_image_path,
+                )
                 publication_results["linkedin_feed"] = feed_res
             except Exception as e_feed:
                 logger.error("Failed to publish LinkedIn feed post: %s", e_feed)
@@ -171,17 +263,6 @@ def publish_reviewed_editorial(
         # 4.2 LinkedIn Pulse Article (if present)
         if package.linkedin_artigo_titulo and package.linkedin_artigo_corpo:
             try:
-                cover_image_path = None
-                possible_covers = [
-                    f"/app/data/og-{package.slug_blog}.png",
-                    f"/app/og-{package.slug_blog}.png",
-                    f"data/og-{package.slug_blog}.png",
-                ]
-                for p_path in possible_covers:
-                    if Path(p_path).exists():
-                        cover_image_path = str(p_path)
-                        break
-
                 pulse_res = linkedin_client.publish_pulse_article(
                     title=package.linkedin_artigo_titulo,
                     content_markdown=package.linkedin_artigo_corpo,
@@ -225,7 +306,44 @@ def publish_reviewed_editorial(
 
             wpp_msg += f"\n📄 *Documento Base:* {doc_url or f'https://docs.google.com/document/d/{doc_id}/edit'}"
 
-            asyncio.run(evolution.send_text_message(settings.NOTIFICATION_PHONE, wpp_msg))
+            # Dispatch with real image attachment if available
+            wpp_dispatched = False
+            wpp_image_candidate = locals().get("feed_image_path") or cover_image_path
+            if wpp_image_candidate and Path(wpp_image_candidate).exists():
+                try:
+                    img_filename = Path(wpp_image_candidate).name
+                    # Evolution API reliably ingests public URLs hosted on the domain
+                    public_img_url = f"https://www.fernandonogueira.dev.br/{img_filename}"
+                    asyncio.run(evolution.send_media_message(
+                        phone=settings.NOTIFICATION_PHONE,
+                        media_base64_or_url=public_img_url,
+                        file_name=img_filename,
+                        caption=wpp_msg,
+                        media_type="image",
+                        mime_type="image/png",
+                    ))
+                    wpp_dispatched = True
+                except Exception as err_media:
+                    logger.warning("Could not send media message via public URL, attempting base64 fallback: %s", err_media)
+                    try:
+                        import base64
+                        with open(wpp_image_candidate, "rb") as img_f:
+                            raw_b64 = base64.b64encode(img_f.read()).decode('utf-8')
+                        asyncio.run(evolution.send_media_message(
+                            phone=settings.NOTIFICATION_PHONE,
+                            media_base64_or_url=raw_b64,
+                            file_name=img_filename,
+                            caption=wpp_msg,
+                            media_type="image",
+                            mime_type="image/png",
+                        ))
+                        wpp_dispatched = True
+                    except Exception as err_b64:
+                        logger.warning("Base64 media dispatch also failed, falling back to text: %s", err_b64)
+
+            if not wpp_dispatched:
+                asyncio.run(evolution.send_text_message(settings.NOTIFICATION_PHONE, wpp_msg))
+
             logger.info("WhatsApp publication confirmation sent to %s", settings.NOTIFICATION_PHONE)
         except Exception as e_wpp:
             logger.warning("Could not send WhatsApp publication notification: %s", e_wpp)

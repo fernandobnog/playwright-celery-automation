@@ -160,18 +160,33 @@ class SitePublisher:
 
         key = (
             getattr(settings, "INTERNAL_GATEWAY_KEY", None)
-            or getattr(settings, "INTERNAL_API_KEY", None)
             or "37e77cd994f94a5f3f8a183a28d4a14fd87f8a1c14933e31bd3f5bb7f118c78f"
         )
         headers = {"X-Internal-Gateway-Key": key}
 
-        # Endpoints matching possible host bridge gateway IPs
-        candidate_urls = [
+        # Dynamically discover default gateway from /proc/net/route
+        candidate_urls = []
+        try:
+            with open("/proc/net/route") as f:
+                for line in f.readlines()[1:]:
+                    fields = line.strip().split()
+                    if len(fields) >= 3 and fields[1] == "00000000":
+                        import socket
+                        gw_hex = fields[2]
+                        gw_ip = socket.inet_ntoa(bytes.fromhex(gw_hex)[::-1])
+                        candidate_urls.append(f"http://{gw_ip}:3002/api/rebuild")
+        except Exception:
+            pass
+
+        candidate_urls.extend([
+            "http://172.23.0.1:3002/api/rebuild",
             "http://172.18.0.1:3002/api/rebuild",
             "http://172.17.0.1:3002/api/rebuild",
+            "http://172.19.0.1:3002/api/rebuild",
+            "http://172.20.0.1:3002/api/rebuild",
             "http://host.docker.internal:3002/api/rebuild",
             "http://127.0.0.1:3002/api/rebuild",
-        ]
+        ])
 
         for url in candidate_urls:
             try:

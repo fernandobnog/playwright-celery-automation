@@ -71,6 +71,19 @@ class LinkedInPublisher:
 
         return None
 
+    def _inject_cookies_into_context(self, context: BrowserContext) -> None:
+        """Loads cookies from storage_state file or central Redis into browser context."""
+        try:
+            if self.state_path.exists() and self.state_path.stat().st_size > 10:
+                with open(self.state_path, "r", encoding="utf-8") as sf:
+                    state_data = json.load(sf)
+                    cookies = state_data.get("cookies", [])
+                    if cookies:
+                        context.add_cookies(cookies)
+                        logger.info("Injected %d cookies from storage_state into context", len(cookies))
+        except Exception as err_ck:
+            logger.warning("Could not inject cookies into context: %s", err_ck)
+
     def save_session_to_disk_and_redis(self, context: BrowserContext):
         """
         Persists current authenticated context to both shared volume and Redis.
@@ -91,7 +104,7 @@ class LinkedInPublisher:
         """Checks if current page has active LinkedIn authenticated session."""
         try:
             current_url = page.url.lower()
-            if any(k in current_url for k in ["login", "checkpoint", "authwall", "challenge", "uas/"]):
+            if any(k in current_url for k in ["login", "checkpoint", "authwall", "challenge"]):
                 return False
 
             # 1. Check for standard authenticated elements
@@ -121,9 +134,22 @@ class LinkedInPublisher:
         Navigates to LinkedIn feed and verifies authentication.
         Attempts auto-login if credentials are provided in settings.
         """
+        self._inject_cookies_into_context(context)
         logger.info("Checking LinkedIn authentication status...")
         page.goto("https://www.linkedin.com/feed/", wait_until="domcontentloaded", timeout=self.timeout_ms)
         human_sleep(2.0, 3.5)
+
+        # Check for intermediate 'We are signing you in' / 'Estamos dando acesso' screen transition
+        for _ in range(8):
+            if self.is_logged_in(page):
+                break
+            try:
+                page_text = page.content().lower()
+                if any(phrase in page_text for phrase in ["signing you in", "dando acesso", "estamos dando"]):
+                    logger.info("Detected LinkedIn transition screen ('Estamos dando acesso'). Waiting for auto-redirect...")
+                    human_sleep(2.5, 3.5)
+            except Exception:
+                break
 
         if self.is_logged_in(page):
             logger.info("LinkedIn session is ACTIVE and verified.")
@@ -207,7 +233,7 @@ class LinkedInPublisher:
                     headless=self.headless,
                     args=launch_args,
                     viewport={"width": 1280, "height": 850},
-                    user_agent=std_ua,
+                    user_agent=PERSISTENT_USER_AGENT,
                     locale="pt-BR",
                     timezone_id="America/Sao_Paulo",
                 )
@@ -216,7 +242,7 @@ class LinkedInPublisher:
                 browser = p.chromium.launch(headless=self.headless, args=launch_args)
                 context_kwargs = {
                     "viewport": {"width": 1280, "height": 850},
-                    "user_agent": std_ua,
+                    "user_agent": PERSISTENT_USER_AGENT,
                     "locale": "pt-BR",
                     "timezone_id": "America/Sao_Paulo",
                 }
@@ -256,7 +282,7 @@ class LinkedInPublisher:
 
                 human_sleep(1.5, 2.5)
 
-                # 2. Wait for modal editor area
+                # 2. Wait for modal editor area (allowing for spinner to resolve)
                 editor_selectors = [
                     "div.tiptap.ProseMirror",
                     "div[role='textbox']",
@@ -267,11 +293,18 @@ class LinkedInPublisher:
                 ]
 
                 editor = None
-                for ed_sel in editor_selectors:
-                    ed_loc = page.locator(ed_sel).first
-                    if ed_loc.is_visible(timeout=5000):
-                        editor = ed_loc
+                for _ in range(25):
+                    for ed_sel in editor_selectors:
+                        ed_loc = page.locator(ed_sel).first
+                        try:
+                            if ed_loc.is_visible():
+                                editor = ed_loc
+                                break
+                        except Exception:
+                            pass
+                    if editor:
                         break
+                    time.sleep(1.0)
 
                 if not editor:
                     shot_err = str(settings.downloads_path / "linkedin_modal_error.png")
@@ -298,9 +331,12 @@ class LinkedInPublisher:
 
                             # Click "Next" button in media preview
                             next_btn = page.locator("button:has-text('Next'), button:has-text('Avançar')").first
-                            if next_btn.is_visible(timeout=4000):
-                                next_btn.click()
-                                human_sleep(1.5, 2.5)
+                            for _ in range(10):
+                                if next_btn.is_visible():
+                                    next_btn.click()
+                                    human_sleep(1.5, 2.5)
+                                    break
+                                time.sleep(1.0)
                     except Exception as err_img:
                         logger.warning("Could not attach image to LinkedIn post (%s). Continuing with text...", err_img)
 
@@ -313,12 +349,19 @@ class LinkedInPublisher:
                 ]
 
                 post_clicked = False
-                for btn_sel in submit_buttons:
-                    btn = page.locator(btn_sel).first
-                    if btn.is_visible(timeout=3000) and btn.is_enabled():
-                        btn.click()
-                        post_clicked = True
+                for _ in range(15):
+                    for btn_sel in submit_buttons:
+                        btn = page.locator(btn_sel).first
+                        try:
+                            if btn.is_visible() and btn.is_enabled():
+                                btn.click()
+                                post_clicked = True
+                                break
+                        except Exception:
+                            pass
+                    if post_clicked:
                         break
+                    time.sleep(1.0)
 
                 if not post_clicked:
                     shot_submit_err = str(settings.downloads_path / "linkedin_submit_btn_error.png")
@@ -427,11 +470,18 @@ class LinkedInPublisher:
                     "textarea[aria-label*='headline']",
                 ]
                 title_loc = None
-                for sel in title_selectors:
-                    loc = page.locator(sel).first
-                    if loc.is_visible(timeout=2000):
-                        title_loc = loc
+                for _ in range(15):
+                    for sel in title_selectors:
+                        loc = page.locator(sel).first
+                        try:
+                            if loc.is_visible():
+                                title_loc = loc
+                                break
+                        except Exception:
+                            pass
+                    if title_loc:
                         break
+                    time.sleep(1.0)
 
                 if not title_loc:
                     shot_err = str(settings.downloads_path / "linkedin_pulse_title_err.png")
@@ -452,8 +502,27 @@ class LinkedInPublisher:
                     body_lines.append(line)
                 clean_body = "\n".join(body_lines).strip()
 
-                body_loc = page.locator("div.ProseMirror p.article-editor-paragraph, div.ProseMirror[contenteditable='true']").first
-                if not body_loc.is_visible(timeout=4000):
+                body_loc = None
+                body_selectors = [
+                    "div.ProseMirror p.article-editor-paragraph",
+                    "div.ProseMirror[contenteditable='true']",
+                    "div[data-placeholder*='artigo']",
+                    "div[data-placeholder*='article']",
+                ]
+                for _ in range(15):
+                    for b_sel in body_selectors:
+                        b_cand = page.locator(b_sel).first
+                        try:
+                            if b_cand.is_visible():
+                                body_loc = b_cand
+                                break
+                        except Exception:
+                            pass
+                    if body_loc:
+                        break
+                    time.sleep(1.0)
+
+                if not body_loc:
                     shot_err = str(settings.downloads_path / "linkedin_pulse_body_err.png")
                     page.screenshot(path=shot_err)
                     raise RuntimeError(f"Could not find body area in article editor. Screenshot: {shot_err}")
@@ -464,8 +533,26 @@ class LinkedInPublisher:
                 human_sleep(2.0, 3.5)
 
                 # 5. Click Avançar button (top right)
-                next_btn = page.locator("button.article-editor-nav__publish, button:has-text('Avançar'), button:has-text('Next')").first
-                if not next_btn.is_visible(timeout=5000) or not next_btn.is_enabled():
+                next_btn_selectors = [
+                    "button.article-editor-nav__publish",
+                    "button:has-text('Avançar')",
+                    "button:has-text('Next')",
+                ]
+                next_btn = None
+                for _ in range(15):
+                    for n_sel in next_btn_selectors:
+                        n_cand = page.locator(n_sel).first
+                        try:
+                            if n_cand.is_visible() and n_cand.is_enabled():
+                                next_btn = n_cand
+                                break
+                        except Exception:
+                            pass
+                    if next_btn:
+                        break
+                    time.sleep(1.0)
+
+                if not next_btn:
                     shot_err = str(settings.downloads_path / "linkedin_pulse_next_err.png")
                     page.screenshot(path=shot_err)
                     raise RuntimeError("Avançar button not ready in article editor.")
@@ -482,8 +569,27 @@ class LinkedInPublisher:
                     human_sleep(1.0, 2.0)
 
                 # Click primary action publish button (not the audience settings button)
-                pub_btn = page.locator("button.share-actions__primary-action, div[role='dialog'] button.artdeco-button--primary:has-text('Publicar')").first
-                if not pub_btn.is_visible(timeout=5000) or not pub_btn.is_enabled():
+                pub_btn_selectors = [
+                    "button.share-actions__primary-action",
+                    "div[role='dialog'] button.artdeco-button--primary:has-text('Publicar')",
+                    "button:has-text('Publicar')",
+                    "button:has-text('Post')",
+                ]
+                pub_btn = None
+                for _ in range(15):
+                    for p_sel in pub_btn_selectors:
+                        p_cand = page.locator(p_sel).first
+                        try:
+                            if p_cand.is_visible() and p_cand.is_enabled():
+                                pub_btn = p_cand
+                                break
+                        except Exception:
+                            pass
+                    if pub_btn:
+                        break
+                    time.sleep(1.0)
+
+                if not pub_btn:
                     shot_err = str(settings.downloads_path / "linkedin_pulse_pub_err.png")
                     page.screenshot(path=shot_err)
                     raise RuntimeError("Final Publicar button not found or enabled in share dialog.")

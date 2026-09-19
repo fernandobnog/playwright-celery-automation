@@ -12,14 +12,14 @@ from playwright.sync_api import sync_playwright
 
 from core.config import settings
 from scrapers.humanizer import human_sleep
-from scrapers.linkedin_publisher import linkedin_publisher
-from scrapers.stealth import STEALTH_EVASION_SCRIPT, get_random_user_agent, get_random_viewport
+from scrapers.linkedin_publisher import linkedin_publisher, PERSISTENT_USER_AGENT
+from scrapers.stealth import STEALTH_EVASION_SCRIPT, get_random_viewport
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("interactive_login")
 
 
-def run_interactive_login(timeout_seconds: int = 600):
+def run_interactive_login(timeout_seconds: int = 7200):
     username = settings.LINKEDIN_USERNAME
     password = settings.LINKEDIN_PASSWORD
     if not username or not password:
@@ -27,32 +27,40 @@ def run_interactive_login(timeout_seconds: int = 600):
         return False
     state_path = Path(settings.AUTH_STATE_DIR) / "linkedin_state.json"
     state_path.parent.mkdir(parents=True, exist_ok=True)
+    profile_dir = settings.PLAYWRIGHT_USER_DATA_DIR or "/app/data/browser_profile"
 
-    logger.info("Starting interactive login helper on display :99 (viewable at noVNC port 6081)...")
+    logger.info("Starting interactive login helper with persistent profile at %s on display :99 (noVNC port 6081)...", profile_dir)
 
     with sync_playwright() as p:
-        viewport = get_random_viewport()
-        user_agent = get_random_user_agent()
-
-        browser = p.chromium.launch(
+        context = p.chromium.launch_persistent_context(
+            user_data_dir=profile_dir,
             headless=False,  # Visible on Xvfb :99 / noVNC
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
             ],
-        )
-
-        context = browser.new_context(
-            viewport=viewport,
-            user_agent=user_agent,
+            viewport={"width": 1280, "height": 850},
+            user_agent=PERSISTENT_USER_AGENT,
             locale="pt-BR",
             timezone_id="America/Sao_Paulo",
         )
         context.add_init_script(STEALTH_EVASION_SCRIPT)
-        page = context.new_page()
+        page = context.pages[0] if context.pages else context.new_page()
 
         try:
+            logger.info("Checking if persistent profile is already logged in on feed...")
+            try:
+                page.goto("https://www.linkedin.com/feed/", wait_until="domcontentloaded", timeout=25000)
+                human_sleep(2.0, 3.5)
+                if linkedin_publisher.is_logged_in(page):
+                    logger.info("🎉 SUCCESS: Session already valid and verified on persistent profile!")
+                    linkedin_publisher.save_session_to_disk_and_redis(context)
+                    print("LINKEDIN_LOGIN_SUCCESS")
+                    return True
+            except Exception as e_check:
+                logger.warning("Session pre-check notice: %s", e_check)
+
             logger.info("Navigating to https://www.linkedin.com/login...")
             page.goto("https://www.linkedin.com/login", wait_until="domcontentloaded")
             human_sleep(1.5, 2.5)
@@ -130,8 +138,10 @@ def run_interactive_login(timeout_seconds: int = 600):
             logger.warning("Interactive login timed out after %d seconds.", timeout_seconds)
             return False
         finally:
-            context.close()
-            browser.close()
+            try:
+                context.close()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

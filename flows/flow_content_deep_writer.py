@@ -854,6 +854,35 @@ def generate_deep_content_and_deliver(
     base_url = "https://www.fernandonogueira.dev.br"
     publish_url = f"{base_url}/api/v1/editorial/publish?token={publish_token}"
 
+    # 3.5 Generate illustrative artwork via FLUX (zero-text, pure visual metaphor)
+    generated_cover_path = None
+    try:
+        from integrations.image_generator import image_generator
+        # Use Canal 4 prompt or blog title
+        img_prompt = (
+            getattr(result.prompts_imagem, "imagem_wordpress_16x9", None)
+            or result.tema_selecionado
+        )
+        generated_cover_path = image_generator.generate_image(
+            prompt=img_prompt,
+            slug=clean_slug,
+            format_type="16:9",
+            category=categoria,
+        )
+        # Also generate square format for Instagram / WhatsApp
+        sq_prompt = (
+            getattr(result.prompts_imagem, "imagem_feed_instagram_1x1", None)
+            or result.tema_selecionado
+        )
+        image_generator.generate_image(
+            prompt=sq_prompt,
+            slug=clean_slug,
+            format_type="1:1",
+            category=categoria,
+        )
+    except Exception as err_img:
+        logger.warning("Could not pre-generate artwork in deep writer: %s", err_img)
+
     delivery_status = {"whatsapp": "SKIPPED", "email": "SKIPPED"}
 
     # 4. Dispatch notification via WhatsApp (Evolution API)
@@ -861,19 +890,41 @@ def generate_deep_content_and_deliver(
         try:
             import asyncio
             wpp_message = (
-                f"🚀 *Fernando, seu pacote editorial completo está pronto para revisão!*\n\n"
-                f"📌 *Tema:* {result.tema_selecionado}\n"
-                f"📂 *Categoria:* {result.categoria}\n"
-                f"🌐 *Pesquisa Web Autônoma:* {result.total_fontes_analisadas} fontes analisadas.\n\n"
-                f"📄 *1. Acesse o Google Doc para revisar e editar:*\n{doc_url}\n\n"
-                f"👉 *2. Quando terminar, publique em 1 clique (Blog + LinkedIn):*\n{publish_url}\n\n"
-                f"✨ *Pacote Completo Gerado (4 Canais):*\n"
+                f"🚨 *PAUTA SELECIONADA E MATERIAL DISPONÍVEL*\n\n"
+                f"📌 *Tema:* {pauta_titulo}\n"
+                f"📂 *Categoria:* {categoria}\n"
+                f"🔗 *Google Docs:* {doc_url}\n\n"
+                f"🎯 *Para Publicar Direto (após sua revisão):*\n"
+                f"{publish_url}\n\n"
+                f"✨ *Canais Prontos no Google Docs:*\n"
                 f"• 📝 *Blog WordPress:* 800-1200 palavras com casos reais, Analogy Engine, framework e SEO\n"
                 f"• 💼 *LinkedIn:* Artigo Pulse (600-1100 pal.) + Post de Feed com gancho e emoji 👇\n"
                 f"• 📸 *Instagram:* Legenda de Carrossel + Roteiro Reels (45-55s em tabela)\n"
-                f"• 🎨 *Prompts de Imagem:* 1x1, 9x16 e 16x9 em inglês técnico com paleta institucional (#ba2649, #922824)"
+                f"• 🎨 *Arte Conceitual:* Ilustração editorial de alto impacto sem textos"
             )
-            asyncio.run(evo.send_text_message(settings.NOTIFICATION_PHONE, wpp_message))
+
+            # Send with media if generated
+            wpp_dispatched = False
+            if generated_cover_path and Path(generated_cover_path).exists():
+                try:
+                    import base64
+                    with open(generated_cover_path, "rb") as img_f:
+                        img_b64 = f"data:image/png;base64,{base64.b64encode(img_f.read()).decode('utf-8')}"
+                    asyncio.run(evo.send_media_message(
+                        phone=settings.NOTIFICATION_PHONE,
+                        media_base64_or_url=img_b64,
+                        file_name=f"{clean_slug}.png",
+                        caption=wpp_message,
+                        media_type="image",
+                        mime_type="image/png",
+                    ))
+                    wpp_dispatched = True
+                except Exception as err_wpp_media:
+                    logger.warning("Failed to dispatch media to WhatsApp, falling back to text: %s", err_wpp_media)
+
+            if not wpp_dispatched:
+                asyncio.run(evo.send_text_message(settings.NOTIFICATION_PHONE, wpp_message))
+
             delivery_status["whatsapp"] = "SENT"
             logger.info("WhatsApp notification dispatched to %s", settings.NOTIFICATION_PHONE)
         except Exception as err_wpp:
