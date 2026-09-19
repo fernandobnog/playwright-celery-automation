@@ -63,7 +63,7 @@ class SitePublisher:
         # Normalize category
         cat_upper = (category or "").upper()
         if "MÚSICA" in cat_upper or "MUSICA" in cat_upper:
-            normalized_cat = "MÚSICA"
+            normalized_cat = "MUSICA"
         elif "TI" in cat_upper or "TECNOLOGIA" in cat_upper:
             normalized_cat = "TECNOLOGIA"
         else:

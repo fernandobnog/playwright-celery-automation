@@ -95,23 +95,56 @@ def parse_reviewed_doc_content(
             if line.startswith("# ") and not blog_title:
                 blog_title = line.replace("# ", "").strip()
                 break
-        blog_body = c2_text
+
+        # Strip SEO metadata footer from blog body
+        clean_blog_body = re.split(r'---\s*\[METADADOS DE SEO.*?\]\s*---', c2_text, flags=re.IGNORECASE)[0].strip()
+
+        # Remove header markers if present
+        clean_lines = []
+        for line in clean_blog_body.splitlines():
+            if line.startswith("CANAL 2:") or line.startswith("--------------------"):
+                continue
+            clean_lines.append(line)
+        clean_blog_body = "\n".join(clean_lines).strip()
 
         effective_title = blog_title or default_pauta_titulo
-        # Derive slug safely
-        clean_slug = re.sub(r'[^a-zA-Z0-9\s-]', '', effective_title.lower())
-        clean_slug = re.sub(r'[\s]+', '-', clean_slug).strip('-')[:50]
+
+        # If blog body was truncated or incomplete and pulse article is rich and complete, use pulse body
+        if len(clean_blog_body) < 1500 and pulse_body and len(pulse_body) > 2000:
+            logger.info("Blog content in CANAL 2 is short (%d chars). Using comprehensive CANAL 1 Pulse content (%d chars).", len(clean_blog_body), len(pulse_body))
+            clean_blog_body = pulse_body
+            if pulse_title:
+                effective_title = pulse_title
+
+        # Check for explicit Slug in SEO metadata
+        slug_match = re.search(r'[•\-\*]?\s*Slug:\s*([a-zA-Z0-9_-]+)', c2_text, re.IGNORECASE)
+        if slug_match:
+            clean_slug = slug_match.group(1).strip()
+        else:
+            import unicodedata
+            normalized = unicodedata.normalize("NFKD", effective_title).encode("ascii", "ignore").decode("utf-8")
+            clean_slug = re.sub(r"[^a-zA-Z0-9\s-]", "", normalized.lower())
+            clean_slug = re.sub(r"[-\s]+", "-", clean_slug).strip("-")
+
+        # Category normalization
+        cat_norm = (default_categoria or "TECNOLOGIA").upper()
+        if "MUSICA" in cat_norm or "MÚSICA" in cat_norm:
+            final_cat = "MUSICA"
+        elif "TI" in cat_norm or "TECNOLOGIA" in cat_norm:
+            final_cat = "TECNOLOGIA"
+        else:
+            final_cat = cat_norm
 
         logger.info("Successfully extracted multichannel doc content via deterministic template parser.")
         return ReviewedContentPackage(
             titulo_blog=effective_title,
             subtitulo_blog=f"Artigo editorial sobre {effective_title}",
             slug_blog=clean_slug,
-            corpo_blog_markdown=blog_body or raw_doc_text,
+            corpo_blog_markdown=clean_blog_body or raw_doc_text,
             meta_description=f"Confira a análise sobre {effective_title}.",
-            categoria=default_categoria,
-            tags=["Editorial", default_categoria],
-            tempo_leitura_minutos=5,
+            categoria=final_cat,
+            tags=["Editorial", final_cat],
+            tempo_leitura_minutos=7,
             linkedin_post_feed=feed_post or "",
             linkedin_artigo_titulo=pulse_title,
             linkedin_artigo_corpo=pulse_body,
