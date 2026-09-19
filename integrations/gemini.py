@@ -93,6 +93,7 @@ class GeminiClient:
             response_mime_type="application/json",
             response_schema=response_model,
             temperature=0.2,
+            max_output_tokens=8192,
         )
 
         models_to_try = [model_name]
