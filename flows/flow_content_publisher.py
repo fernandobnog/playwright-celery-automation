@@ -462,19 +462,49 @@ def publish_reviewed_editorial(
     # 7. Dispatch Email confirmation
     if settings.ADMIN_EMAIL:
         try:
-            email_subject = f"✅ Conteúdo Publicado no Site e LinkedIn: {package.titulo_blog[:40]}"
+            site_ok = publication_results["site"].get("status") == "SUCCESS"
+            pulse_ok = publication_results["linkedin_pulse"].get("status") == "SUCCESS"
+
+            if site_ok and pulse_ok:
+                email_subject = f"✅ Conteúdo Publicado no Site e LinkedIn: {package.titulo_blog[:40]}"
+                badge_text = "✓ Publicação Concluída"
+                badge_bg = "rgba(34,197,94,0.2)"
+                badge_color = "#86efac"
+                top_border = "#16a34a"
+                sub_status = "Publicado automaticamente no Blog e LinkedIn."
+            elif site_ok:
+                email_subject = f"✅ Conteúdo Publicado no Blog: {package.titulo_blog[:40]}"
+                badge_text = "✓ Publicado no Blog"
+                badge_bg = "rgba(59,130,246,0.2)"
+                badge_color = "#93c5fd"
+                top_border = "#2563eb"
+                sub_status = "Publicado com sucesso no Blog do site."
+            else:
+                email_subject = f"⚠️ Falha na Publicação do Blog: {package.titulo_blog[:40]}"
+                badge_text = "⚠️ Erro no Site"
+                badge_bg = "rgba(239,68,68,0.2)"
+                badge_color = "#fca5a5"
+                top_border = "#dc2626"
+                sub_status = "Falha ao gravar artigo no banco ou recompilar site."
+
+            blog_line = (
+                f'<p style="margin: 6px 0;"><strong>🌐 Blog:</strong> <a href="{html.escape(blog_url)}" target="_blank" style="color: #2563eb;">{html.escape(blog_url)}</a></p>'
+                if site_ok
+                else f'<p style="margin: 6px 0; color: #dc2626;"><strong>⚠️ Blog:</strong> Erro ao publicar: {html.escape(str(publication_results["site"].get("error")))}</p>'
+            )
+
             html_body = f"""
             <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #0f172a; max-width: 650px; margin: 0 auto; padding: 20px;">
-                <div style="background-color: #0f172a; color: #ffffff; padding: 22px; border-radius: 10px; border-top: 4px solid #16a34a;">
-                    <span style="background-color: rgba(34,197,94,0.2); color: #86efac; padding: 4px 10px; border-radius: 4px; font-size: 11px; font-weight: 700; text-transform: uppercase;">
-                        ✓ Publicação Concluída
+                <div style="background-color: #0f172a; color: #ffffff; padding: 22px; border-radius: 10px; border-top: 4px solid {top_border};">
+                    <span style="background-color: {badge_bg}; color: {badge_color}; padding: 4px 10px; border-radius: 4px; font-size: 11px; font-weight: 700; text-transform: uppercase;">
+                        {badge_text}
                     </span>
                     <h1 style="margin: 12px 0 4px 0; font-size: 20px;">{html.escape(package.titulo_blog)}</h1>
-                    <p style="margin: 0; color: #94a3b8; font-size: 13px;">Publicado automaticamente no Blog e LinkedIn.</p>
+                    <p style="margin: 0; color: #94a3b8; font-size: 13px;">{sub_status}</p>
                 </div>
                 <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 18px; margin: 20px 0;">
-                    <p style="margin: 6px 0;"><strong>🌐 Blog:</strong> <a href="{html.escape(blog_url)}" target="_blank" style="color: #2563eb;">{html.escape(blog_url)}</a></p>
-                    <p style="margin: 6px 0;"><strong>💼 LinkedIn:</strong> Post publicado com a sua sessão logada</p>
+                    {blog_line}
+                    <p style="margin: 6px 0;"><strong>💼 LinkedIn:</strong> {'Artigo no Pulse publicado com sucesso' if pulse_ok else 'Ignorado / Pendente'}</p>
                     <p style="margin: 6px 0;"><strong>📄 Google Doc:</strong> <a href="{html.escape(doc_url or '')}" target="_blank" style="color: #64748b;">Ver documento revisado</a></p>
                 </div>
             </div>
@@ -522,6 +552,15 @@ def task_publish_approved_editorial(token_payload: Dict[str, Any]) -> Dict[str, 
         doc_url=doc_url,
         skip_linkedin=skip_linkedin,
     )
+
+    if result.get("publication_results", {}).get("site", {}).get("status") == "ERROR":
+        try:
+            from redis import Redis
+            r = Redis.from_url(settings.REDIS_URL)
+            r.delete(f"editorial:publish_locked:{doc_id}")
+            logger.info("Cleared Redis lock for doc_id %s due to site publication error.", doc_id)
+        except Exception as e_clr:
+            logger.debug("Could not clear Redis publish lock: %s", e_clr)
 
     repo.log_flow_complete(task_id, result)
     return result

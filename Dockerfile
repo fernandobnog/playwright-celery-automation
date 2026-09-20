@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     procps \
     net-tools \
+    iputils-ping \
     dumb-init \
     xvfb \
     x11vnc \

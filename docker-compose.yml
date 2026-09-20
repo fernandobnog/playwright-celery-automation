@@ -71,6 +71,7 @@ services:
         condition: service_healthy
     networks:
       - automation_net
+      - proxy-network
 
   # ============================================================================
   # 4. Scraping Worker 1 (Autonomous with Xvfb + noVNC on Port 6081)
@@ -109,6 +110,7 @@ services:
         condition: service_healthy
     networks:
       - automation_net
+      - proxy-network
 
   # ============================================================================
   # 5. Scraping Worker 2 (Autonomous with Xvfb + noVNC on Port 6082)
@@ -147,6 +149,7 @@ services:
         condition: service_healthy
     networks:
       - automation_net
+      - proxy-network
 
   # ============================================================================
   # 6. Celery Flower (Real-time task monitoring dashboard)
