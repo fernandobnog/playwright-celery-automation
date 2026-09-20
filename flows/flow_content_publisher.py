@@ -161,10 +161,9 @@ def parse_reviewed_doc_content(
 
         effective_title = blog_title or default_pauta_titulo
 
-        # Check if blog body was truncated (ends abruptly mid-sentence or is significantly shorter than pulse)
-        is_abrupt_end = bool(clean_blog_body and clean_blog_body[-1] not in ['.', '!', '?', '"', '”', '’', ')', '`', '*', '_'])
-        if (len(clean_blog_body) < 2500 or is_abrupt_end) and pulse_body and len(pulse_body) > 2000:
-            logger.info("Blog content in CANAL 2 is incomplete (length %d, abrupt end=%s). Using comprehensive CANAL 1 Pulse content (%d chars).", len(clean_blog_body), is_abrupt_end, len(pulse_body))
+        # Only fallback to CANAL 1 if CANAL 2 is genuinely missing or severely incomplete (< 1000 chars and pulse is significantly longer)
+        if len(clean_blog_body) < 1000 and pulse_body and len(pulse_body) > len(clean_blog_body):
+            logger.info("Blog content in CANAL 2 is incomplete (%d chars). Using CANAL 1 Pulse content (%d chars).", len(clean_blog_body), len(pulse_body))
             clean_blog_body = pulse_body
             if pulse_title:
                 effective_title = pulse_title
