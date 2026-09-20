@@ -55,6 +55,34 @@ Diretrizes inegociáveis:
 """
 
 
+def strip_editorial_preamble(md_text: str) -> str:
+    """
+    Strips metadata headers, repeated titles, reading time estimates,
+    and cover image suggestions from markdown text intended for blog publication.
+    """
+    import re
+    lines = []
+    skip_header = True
+    for line in md_text.splitlines():
+        trimmed = line.strip()
+        if re.match(r'^[=\-_\*]{3,}$', trimmed):
+            continue
+        if trimmed.startswith("CANAL ") or "ARTIGO COMPLETO" in trimmed:
+            continue
+        if (
+            trimmed.startswith("⏱️")
+            or trimmed.startswith("🖼️")
+            or trimmed.lower().startswith("sugestão de imagem")
+            or trimmed.lower().startswith("tempo de leitura")
+        ):
+            continue
+        if skip_header and (trimmed.startswith("# ") or trimmed.startswith("*") or not trimmed):
+            continue
+        skip_header = False
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
 def parse_reviewed_doc_content(
     raw_doc_text: str,
     default_pauta_titulo: str = "Tema Editorial",
@@ -141,6 +169,13 @@ def parse_reviewed_doc_content(
             if pulse_title:
                 effective_title = pulse_title
 
+        # Strip metadata, repeated titles, reading time, and cover image suggestions
+        clean_blog_body = strip_editorial_preamble(clean_blog_body)
+
+        # Extract subtitle if available in doc format (*Subtitle*)
+        sub_match = re.search(r'^\*([^\*\n]+)\*', c2_text, re.MULTILINE) or re.search(r'^\*([^\*\n]+)\*', c1_text, re.MULTILINE)
+        extracted_subtitle = sub_match.group(1).strip() if sub_match else f"Artigo editorial sobre {effective_title}"
+
         # Check for explicit Slug in SEO metadata
         slug_match = re.search(r'[•\-\*]?\s*Slug:\s*([a-zA-Z0-9_-]+)', c2_text, re.IGNORECASE)
         if slug_match:
@@ -163,7 +198,7 @@ def parse_reviewed_doc_content(
         logger.info("Successfully extracted multichannel doc content via deterministic template parser.")
         return ReviewedContentPackage(
             titulo_blog=effective_title,
-            subtitulo_blog=f"Artigo editorial sobre {effective_title}",
+            subtitulo_blog=extracted_subtitle,
             slug_blog=clean_slug,
             corpo_blog_markdown=clean_blog_body or raw_doc_text,
             meta_description=f"Confira a análise sobre {effective_title}.",
