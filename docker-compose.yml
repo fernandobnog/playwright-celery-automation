@@ -71,7 +71,6 @@ services:
         condition: service_healthy
     networks:
       - automation_net
-      - proxy-network
 
   # ============================================================================
   # 4. Scraping Worker 1 (Autonomous with Xvfb + noVNC on Port 6081)
@@ -96,6 +95,7 @@ services:
       - NOVNC_PORT=6080
       - HOST_NOVNC_PORT=6081
       - CELERY_CONCURRENCY=2
+      - VNC_PASSWORD=${VNC_PASSWORD}
     ports:
       - "127.0.0.1:6081:6080" # noVNC live visual streaming for Worker 1 (Localhost / SSH tunnel only)
     volumes:
@@ -110,7 +110,6 @@ services:
         condition: service_healthy
     networks:
       - automation_net
-      - proxy-network
 
   # ============================================================================
   # 5. Scraping Worker 2 (Autonomous with Xvfb + noVNC on Port 6082)
@@ -135,6 +134,7 @@ services:
       - NOVNC_PORT=6080
       - HOST_NOVNC_PORT=6082
       - CELERY_CONCURRENCY=2
+      - VNC_PASSWORD=${VNC_PASSWORD}
     ports:
       - "127.0.0.1:6082:6080" # noVNC live visual streaming for Worker 2 (Localhost / SSH tunnel only)
     volumes:
@@ -149,7 +149,6 @@ services:
         condition: service_healthy
     networks:
       - automation_net
-      - proxy-network
 
   # ============================================================================
   # 6. Celery Flower (Real-time task monitoring dashboard)

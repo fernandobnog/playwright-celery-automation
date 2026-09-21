@@ -5,6 +5,7 @@ and initiates WhatsApp contact verification with one-click approval.
 """
 
 import asyncio
+import html
 import logging
 from typing import Any, Dict, Optional
 from core.celery_app import celery_app
@@ -50,6 +51,13 @@ def generate_approval_email_html(
     message: str,
     approve_url: str,
 ) -> str:
+    esc_name = html.escape(name or "")
+    esc_email = html.escape(email or "")
+    esc_phone = html.escape(phone or "")
+    esc_subject = html.escape(subject or "")
+    esc_message = html.escape(message or "").replace("\n", "<br>")
+    first_name_esc = html.escape(name.split()[0] if name else "")
+
     return f"""
     <!DOCTYPE html>
     <html>
@@ -60,11 +68,11 @@ def generate_approval_email_html(
             <p style="color: #64748b; font-size: 14px;">A IA auditou e qualificou este contato como <strong>LEGÍTIMO (REAL)</strong>.</p>
             
             <table style="width: 100%; font-size: 14px; margin: 20px 0; border-collapse: collapse;">
-                <tr><td style="padding: 6px 0; color: #64748b; width: 90px;"><strong>Nome:</strong></td><td>{name}</td></tr>
-                <tr><td style="padding: 6px 0; color: #64748b;"><strong>E-mail:</strong></td><td>{email}</td></tr>
-                <tr><td style="padding: 6px 0; color: #64748b;"><strong>WhatsApp:</strong></td><td>{phone}</td></tr>
-                <tr><td style="padding: 6px 0; color: #64748b;"><strong>Assunto:</strong></td><td>{subject}</td></tr>
-                <tr><td style="padding: 6px 0; color: #64748b; vertical-align: top;"><strong>Mensagem:</strong></td><td style="background: #f1f5f9; padding: 10px; border-radius: 6px;">{message}</td></tr>
+                <tr><td style="padding: 6px 0; color: #64748b; width: 90px;"><strong>Nome:</strong></td><td>{esc_name}</td></tr>
+                <tr><td style="padding: 6px 0; color: #64748b;"><strong>E-mail:</strong></td><td>{esc_email}</td></tr>
+                <tr><td style="padding: 6px 0; color: #64748b;"><strong>WhatsApp:</strong></td><td>{esc_phone}</td></tr>
+                <tr><td style="padding: 6px 0; color: #64748b;"><strong>Assunto:</strong></td><td>{esc_subject}</td></tr>
+                <tr><td style="padding: 6px 0; color: #64748b; vertical-align: top;"><strong>Mensagem:</strong></td><td style="background: #f1f5f9; padding: 10px; border-radius: 6px;">{esc_message}</td></tr>
             </table>
 
             <div style="margin-top: 24px; text-align: center;">
@@ -73,7 +81,7 @@ def generate_approval_email_html(
                 </a>
             </div>
             <p style="color: #94a3b8; font-size: 12px; text-align: center; margin-top: 16px;">
-                Link válido por 48 horas. Mensagem que será enviada: <em>"Oi, {name.split()[0]}! Vi seu contato no site. Posso te passar os detalhes por aqui mesmo?"</em>
+                Link válido por 48 horas. Mensagem que será enviada: <em>"Oi, {first_name_esc}! Vi seu contato no site. Posso te passar os detalhes por aqui mesmo?"</em>
             </p>
         </div>
     </body>

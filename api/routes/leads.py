@@ -3,12 +3,15 @@ FastAPI Routes for Lead Capture and One-Click WhatsApp Approval.
 Receives website contact form events and handles human-in-the-loop approvals.
 """
 
+import hashlib
 import logging
 from typing import Any, Dict, Optional
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
+from redis import Redis
 
+from core.config import settings
 from core.security import verify_approval_token
 from flows.flow_lead_qualification import task_process_lead_qualification
 from integrations.evolution import EvolutionClient
@@ -16,6 +19,14 @@ from integrations.evolution import EvolutionClient
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/leads", tags=["Leads & CRM"])
+
+
+def _get_redis() -> Optional[Redis]:
+    try:
+        return Redis.from_url(settings.REDIS_URL, socket_timeout=2)
+    except Exception as e:
+        logger.warning("Could not connect to Redis for lead idempotency check: %s", e)
+        return None
 
 
 class LeadContactPayload(BaseModel):
@@ -71,10 +82,53 @@ async def approve_whatsapp_message(
     first_name = payload.get("first_name", "")
     message_text = f"Oi, {first_name}!\nVi seu contato no site.\nPosso te passar os detalhes por aqui mesmo?"
 
+    # Prevenção de execução duplicada / varredura de crawlers (Idempotência via Redis)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    lock_key = f"leads:approved:{token_hash}"
+    redis_client = _get_redis()
+
+    if redis_client:
+        try:
+            already_approved = redis_client.get(lock_key)
+            if already_approved:
+                logger.info("Lead approval token %s was already executed.", token_hash[:10])
+                return HTMLResponse(
+                    content=f"""
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <meta charset="utf-8">
+                        <meta name="viewport" content="width=device-width, initial-scale=1">
+                        <title>Aprovação Já Realizada</title>
+                    </head>
+                    <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f8fafc; padding: 40px 20px; text-align: center; color: #1e293b;">
+                        <div style="max-width: 480px; margin: 0 auto; background: #ffffff; padding: 32px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); border: 1px solid #e2e8f0;">
+                            <div style="font-size: 48px; margin-bottom: 16px;">ℹ️</div>
+                            <h2 style="color: #0f172a; margin: 0 0 12px 0;">Mensagem Já Enviada!</h2>
+                            <p style="color: #475569; font-size: 15px; line-height: 1.5;">
+                                A aprovação do contato para <strong>{first_name}</strong> ({phone}) já havia sido confirmada anteriormente e a mensagem foi enviada.
+                            </p>
+                            <p style="color: #94a3b8; font-size: 13px; margin-top: 12px;">
+                                Nenhuma ação adicional é necessária.
+                            </p>
+                        </div>
+                    </body>
+                    </html>
+                    """,
+                    status_code=status.HTTP_200_OK,
+                )
+        except Exception as lock_err:
+            logger.warning("Redis check error for lead approval: %s", lock_err)
+
     evo = EvolutionClient()
     try:
         await evo.send_text_message(phone=phone, text=message_text)
         logger.info("WhatsApp greeting successfully approved and sent to %s (%s)", first_name, phone)
+        if redis_client:
+            try:
+                redis_client.set(lock_key, "1", ex=86400 * 3) # Chave válida por 3 dias
+            except Exception as set_err:
+                logger.warning("Failed to save lead approval in Redis: %s", set_err)
     except Exception as e:
         logger.error("Failed to send WhatsApp greeting to %s: %s", phone, e)
         return HTMLResponse(

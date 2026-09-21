@@ -76,9 +76,9 @@ celery_app.conf.update(
             "schedule": crontab(minute="*/30"),  # Every 30 minutes (Add evento na agenda)
             "options": {"queue": "flows"},
         },
-        "daily-editorial-pautas-07am": {
+        "daily-editorial-pautas-05am": {
             "task": "flows.flow_editorial_pautas.task_daily_editorial_curation",
-            "schedule": crontab(hour=7, minute=0),  # Every day at 07:00 AM (Temas em alta)
+            "schedule": crontab(hour=5, minute=0),  # Diariamente às 05:00 BRT (Curadoria e filtro de temas editoriais)
             "options": {"queue": "flows"},
         },
         "daily-site-agenda-sync-05am": {

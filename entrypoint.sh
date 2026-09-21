@@ -42,8 +42,8 @@ case "${SERVICE_TYPE}" in
   beat)
     wait_for_redis
     echo "Starting Celery Beat Scheduler..."
-    # Remove stale pid file if exists
-    rm -f /app/celerybeat.pid /app/celerybeat-schedule*
+    # Remove stale pid file and schedule db if exists
+    rm -f /app/celerybeat.pid /app/celerybeat-schedule* /app/data/celerybeat-schedule*
     exec celery -A core.celery_app beat -l INFO --schedule=/app/data/celerybeat-schedule
     ;;
 
@@ -73,7 +73,15 @@ case "${SERVICE_TYPE}" in
     sleep 0.5
 
     echo "Starting x11vnc on port ${VNC_P}..."
-    x11vnc -display "${DISPLAY_NUM}" -forever -shared -nopw -rfbport "${VNC_P}" -bg
+    if [ -n "${VNC_PASSWORD}" ]; then
+      echo "Configuring x11vnc with authentication password..."
+      mkdir -p /root/.vnc
+      x11vnc -storepasswd "${VNC_PASSWORD}" /root/.vnc/passwd
+      x11vnc -display "${DISPLAY_NUM}" -forever -shared -rfbauth /root/.vnc/passwd -rfbport "${VNC_P}" -bg
+    else
+      echo "Warning: VNC_PASSWORD not set; restricting x11vnc to localhost inside container..."
+      x11vnc -display "${DISPLAY_NUM}" -forever -shared -localhost -rfbport "${VNC_P}" -bg
+    fi
 
     echo "Starting noVNC / Websockify on port ${NOVNC_P} (bridged to VNC ${VNC_P})..."
     websockify --web /usr/share/novnc "${NOVNC_P}" "localhost:${VNC_P}" &
