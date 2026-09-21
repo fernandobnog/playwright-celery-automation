@@ -85,8 +85,8 @@ def test_sync_agenda_to_postgres():
     mock_conn.__enter__.return_value = mock_conn
     mock_conn.cursor.return_value.__enter__.return_value = mock_cur
 
-    # Mock cursor responses: first show exists (row returned), second does not (None)
-    mock_cur.fetchone.side_effect = [("existing-uuid-1",), None]
+    # Mock cursor responses: first show exists (row returned), second does not (None), then returns new id
+    mock_cur.fetchone.side_effect = [("existing-uuid-1",), None, ("new-uuid-2",)]
 
     with patch("psycopg2.connect", return_value=mock_conn):
         result = sync_agenda_to_postgres(

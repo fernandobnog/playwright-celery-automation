@@ -56,17 +56,49 @@ def get_venue_details(venue_name: str, obs: str = "") -> Dict[str, Optional[str]
     return {"city": "São Paulo (Região)", "state": "SP", "address": None}
 
 
-def parse_date_brazilian(date_str: Any) -> Optional[datetime]:
+def parse_date_brazilian(date_str: Any, time_str: Any = "20:00") -> Optional[datetime]:
     """
-    Parses 'dd/MM/yyyy' date into Python datetime.
+    Parses 'dd/MM/yyyy' date and 'HH:mm' time in America/Sao_Paulo (-03:00),
+    returning naive UTC datetime for PostgreSQL timestamp without time zone storage.
     """
     if not date_str:
         return None
     raw = str(date_str).strip().split(" ")[0]
+    parts = raw.split("/")
+    if len(parts) != 3:
+        return None
     try:
-        dt = datetime.strptime(raw, "%d/%m/%Y")
-        return dt
+        day = int(parts[0])
+        month = int(parts[1])
+        year = int(parts[2])
+        if year < 100:
+            year += 2000
     except ValueError:
+        return None
+
+    hour, minute = 20, 0
+    if time_str:
+        t_clean = str(time_str).strip()
+        t_parts = t_clean.split(":")
+        if len(t_parts) >= 2:
+            try:
+                hour = int(t_parts[0])
+                minute = int(t_parts[1])
+            except ValueError:
+                pass
+        elif len(t_parts) == 1 and t_parts[0].isdigit():
+            try:
+                hour = int(t_parts[0])
+            except ValueError:
+                pass
+
+    try:
+        from zoneinfo import ZoneInfo
+        tz_brt = ZoneInfo("America/Sao_Paulo")
+        dt_brt = datetime(year, month, day, hour, minute, tzinfo=tz_brt)
+        dt_utc = dt_brt.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
+        return dt_utc
+    except Exception:
         return None
 
 
@@ -79,6 +111,7 @@ def sync_agenda_to_postgres(
     """
     Reads Google Sheets Agenda and performs bulk upsert into PostgreSQL public."Show".
     """
+    from zoneinfo import ZoneInfo
     google_hub = hub or GoogleHub()
     db_url = postgres_url or settings.CHECK_LINKS_POSTGRES_URL
 
@@ -88,82 +121,102 @@ def sync_agenda_to_postgres(
         logger.warning("No records found in Agenda worksheet.")
         return {"status": "EMPTY", "count": 0}
 
-    today = date.today()
+    today_brt = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
     shows_to_upsert = []
     upcoming_count = 0
 
     for row in records:
-        event_dt = parse_date_brazilian(row.get("Data"))
-        venue = str(row.get("Local") or "").strip()
-        if not event_dt or not venue:
+        raw_venue = str(row.get("Local") or "").strip()
+        date_str = str(row.get("Data") or "").strip()
+        inicio = str(row.get("Início") or "").strip()
+        obs = str(row.get("Observações") or "").strip()
+
+        event_dt_utc = parse_date_brazilian(date_str, inicio)
+        if not event_dt_utc or not raw_venue:
             continue
 
-        inicio = str(row.get("Início") or "").strip()
-        termino = str(row.get("Término") or "").strip()
-        obs = str(row.get("Observações") or "").strip()
-        cache = str(row.get("Cache") or "").strip()
-
-        details = get_venue_details(venue, obs)
-        is_upcoming = event_dt.date() >= today
+        event_dt_brt = event_dt_utc.replace(tzinfo=ZoneInfo("UTC")).astimezone(ZoneInfo("America/Sao_Paulo"))
+        is_upcoming = event_dt_brt.date() >= today_brt
         if is_upcoming:
             upcoming_count += 1
 
-        description_parts = []
-        if inicio:
-            description_parts.append(f"Horário: {inicio}" + (f" às {termino}" if termino else ""))
-        if obs:
-            description_parts.append(obs)
-        if cache:
-            description_parts.append(f"Cachê: {cache}")
-        description = " | ".join(description_parts) if description_parts else None
+        is_private = "privad" in raw_venue.lower() or "privad" in obs.lower()
+        venue = "Evento Privado" if is_private else raw_venue
+        venue_short = "Privado" if is_private else (raw_venue.split()[0] if raw_venue else raw_venue)
+        details = get_venue_details(raw_venue, obs)
 
-        shows_to_upsert.append((
-            event_dt,
-            venue,
-            venue[:50],  # venueShort
-            details["city"],
-            details["state"],
-            details["address"],
-            description,
-            json.dumps(["Música ao Vivo", "Voz e Violão", details["city"]]),
-            is_upcoming,
-            True,  # active
-            datetime.now(),
-            datetime.now(),
-        ))
+        description = (
+            "Apresentação exclusiva de voz e violão para evento privado. Repertório personalizado com clássicos de MPB, Pop Rock acústico e canções selecionadas."
+            if is_private
+            else "Show especial de voz e violão ao vivo. Clássicos de MPB, Pop Rock acústico e canções autorais."
+        )
+
+        tags = (
+            ["Voz & Violão", "Evento Privado", "MPB", "Pop Rock Acústico"]
+            if is_private
+            else ["Voz & Violão", "MPB", "Pop Rock Acústico"]
+        )
+
+        shows_to_upsert.append({
+            "dt_utc": event_dt_utc,
+            "dt_brt_date": event_dt_brt.date(),
+            "venue": venue,
+            "venueShort": venue_short,
+            "city": details["city"],
+            "state": details["state"],
+            "address": details["address"],
+            "description": description,
+            "tags": json.dumps(tags),
+            "upcoming": is_upcoming,
+            "active": True,
+        })
 
     # Persist in PostgreSQL
+    touched_ids = []
     with psycopg2.connect(db_url) as conn:
         with conn.cursor() as cur:
-            # We refresh upcoming status across all shows first
-            cur.execute("""
-                UPDATE public."Show"
-                SET upcoming = (date >= CURRENT_DATE), "updatedAt" = NOW();
-            """)
-
-            # Upsert shows by matching venue and date::date
             for s in shows_to_upsert:
                 cur.execute("""
-                    SELECT id FROM public."Show" 
-                    WHERE venue = %s AND date::date = %s::date
+                    SELECT id FROM public."Show"
+                    WHERE (venue = %s OR (venue IN ('Privado', 'Evento Privado') AND %s IN ('Privado', 'Evento Privado')))
+                      AND (date AT TIME ZONE 'UTC' AT TIME ZONE 'America/Sao_Paulo')::date = %s::date
                     LIMIT 1;
-                """, (s[1], s[0].date()))
+                """, (s["venue"], s["venue"], s["dt_brt_date"]))
                 row = cur.fetchone()
 
                 if row:
+                    show_id = row[0]
+                    touched_ids.append(show_id)
                     cur.execute("""
                         UPDATE public."Show"
-                        SET "city" = %s, "state" = %s, "address" = %s, "description" = %s,
-                            "tags" = %s, "upcoming" = %s, "active" = %s, "updatedAt" = NOW()
+                        SET "date" = %s, "venue" = %s, "venueShort" = %s, "city" = %s, "state" = %s,
+                            "address" = %s, "description" = %s, "tags" = %s, "upcoming" = %s,
+                            "active" = %s, "updatedAt" = NOW()
                         WHERE id = %s;
-                    """, (s[3], s[4], s[5], s[6], s[7], s[8], s[9], row[0]))
+                    """, (
+                        s["dt_utc"], s["venue"], s["venueShort"], s["city"], s["state"],
+                        s["address"], s["description"], s["tags"], s["upcoming"],
+                        s["active"], show_id
+                    ))
                 else:
                     cur.execute("""
                         INSERT INTO public."Show" (
                             "date", "venue", "venueShort", "city", "state", "address",
                             "description", "tags", "upcoming", "active", "createdAt", "updatedAt"
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
-                    """, s)
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                        RETURNING id;
+                    """, (
+                        s["dt_utc"], s["venue"], s["venueShort"], s["city"], s["state"],
+                        s["address"], s["description"], s["tags"], s["upcoming"], s["active"]
+                    ))
+                    new_id = cur.fetchone()[0]
+                    touched_ids.append(new_id)
+
+            if touched_ids:
+                cur.execute("""
+                    DELETE FROM public."Show"
+                    WHERE id NOT IN %s;
+                """, (tuple(touched_ids),))
 
             # Insert SyncLog
             cur.execute("""
