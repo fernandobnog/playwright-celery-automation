@@ -47,6 +47,7 @@ services:
     networks:
       - automation_net
       - proxy-network
+      - site_internal
 
   # ============================================================================
   # 3. Celery Beat (Periodic Automation Scheduler replacing Cron/n8n triggers)
@@ -71,6 +72,8 @@ services:
         condition: service_healthy
     networks:
       - automation_net
+      - proxy-network
+      - site_internal
 
   # ============================================================================
   # 4. Scraping Worker 1 (Autonomous with Xvfb + noVNC on Port 6081)
@@ -110,6 +113,8 @@ services:
         condition: service_healthy
     networks:
       - automation_net
+      - proxy-network
+      - site_internal
 
   # ============================================================================
   # 5. Scraping Worker 2 (Autonomous with Xvfb + noVNC on Port 6082)
@@ -149,6 +154,8 @@ services:
         condition: service_healthy
     networks:
       - automation_net
+      - proxy-network
+      - site_internal
 
   # ============================================================================
   # 6. Celery Flower (Real-time task monitoring dashboard)
@@ -195,4 +202,7 @@ networks:
   automation_net:
     driver: bridge
   proxy-network:
+    external: true
+  site_internal:
+    name: site_site_internal
     external: true
