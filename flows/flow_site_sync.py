@@ -292,9 +292,14 @@ def task_sync_site_agenda() -> Dict[str, Any]:
     """Celery periodic task for syncing shows to PostgreSQL."""
     task_id = "site_agenda_sync_" + datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     repo.log_flow_start(task_id, "sync_site_agenda", {})
-    res = sync_agenda_to_postgres()
-    repo.log_flow_complete(task_id, res)
-    return res
+    try:
+        res = sync_agenda_to_postgres()
+        repo.log_flow_complete(task_id, res)
+        return res
+    except Exception as e:
+        logger.error("Error executing task_sync_site_agenda: %s", e, exc_info=True)
+        repo.log_flow_error(task_id, str(e))
+        raise
 
 
 @celery_app.task(name="flows.flow_site_sync.task_sync_site_repertorio")
@@ -302,6 +307,11 @@ def task_sync_site_repertorio() -> Dict[str, Any]:
     """Celery periodic task for syncing repertoire to PostgreSQL."""
     task_id = "site_repertorio_sync_" + datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     repo.log_flow_start(task_id, "sync_site_repertorio", {})
-    res = sync_repertorio_to_postgres()
-    repo.log_flow_complete(task_id, res)
-    return res
+    try:
+        res = sync_repertorio_to_postgres()
+        repo.log_flow_complete(task_id, res)
+        return res
+    except Exception as e:
+        logger.error("Error executing task_sync_site_repertorio: %s", e, exc_info=True)
+        repo.log_flow_error(task_id, str(e))
+        raise

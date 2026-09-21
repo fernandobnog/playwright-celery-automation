@@ -81,14 +81,14 @@ celery_app.conf.update(
             "schedule": crontab(hour=5, minute=0),  # Diariamente às 05:00 BRT (Curadoria e filtro de temas editoriais)
             "options": {"queue": "flows"},
         },
-        "daily-site-agenda-sync-05am": {
+        "site-agenda-sync-periodic": {
             "task": "flows.flow_site_sync.task_sync_site_agenda",
-            "schedule": crontab(hour=5, minute=0),  # Daily at 05:00 AM BRT
+            "schedule": crontab(minute="*/30"),  # Every 30 minutes
             "options": {"queue": "flows"},
         },
-        "daily-site-repertorio-sync-0530am": {
+        "site-repertorio-sync-periodic": {
             "task": "flows.flow_site_sync.task_sync_site_repertorio",
-            "schedule": crontab(hour=5, minute=30),  # Daily at 05:30 AM BRT
+            "schedule": crontab(minute="*/30"),  # Every 30 minutes
             "options": {"queue": "flows"},
         },
         "daily-morning-quote-etl": {
