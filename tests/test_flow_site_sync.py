@@ -146,6 +146,7 @@ def test_sync_repertorio_to_postgres():
 
 def test_task_sync_site_agenda():
     with patch("flows.flow_site_sync.sync_agenda_to_postgres") as mock_sync, \
+         patch("flows.flow_site_sync.site_publisher.trigger_static_rebuild", return_value={"status": "SUCCESS"}), \
          patch("storage.repository.repo.log_flow_start"), \
          patch("storage.repository.repo.log_flow_complete"):
 
@@ -158,6 +159,7 @@ def test_task_sync_site_agenda():
 
 def test_task_sync_site_repertorio():
     with patch("flows.flow_site_sync.sync_repertorio_to_postgres") as mock_sync, \
+         patch("flows.flow_site_sync.site_publisher.trigger_static_rebuild", return_value={"status": "SUCCESS"}), \
          patch("storage.repository.repo.log_flow_start"), \
          patch("storage.repository.repo.log_flow_complete"):
 

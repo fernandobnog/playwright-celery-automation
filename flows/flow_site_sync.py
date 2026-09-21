@@ -15,6 +15,7 @@ from psycopg2.extras import execute_values
 from core.celery_app import celery_app
 from core.config import settings
 from integrations.google import GoogleHub
+from integrations.site_publisher import site_publisher
 from storage.repository import repo
 
 logger = logging.getLogger(__name__)
@@ -294,6 +295,8 @@ def task_sync_site_agenda() -> Dict[str, Any]:
     repo.log_flow_start(task_id, "sync_site_agenda", {})
     try:
         res = sync_agenda_to_postgres()
+        rebuild_res = site_publisher.trigger_static_rebuild()
+        res["rebuild"] = rebuild_res
         repo.log_flow_complete(task_id, res)
         return res
     except Exception as e:
@@ -309,6 +312,8 @@ def task_sync_site_repertorio() -> Dict[str, Any]:
     repo.log_flow_start(task_id, "sync_site_repertorio", {})
     try:
         res = sync_repertorio_to_postgres()
+        rebuild_res = site_publisher.trigger_static_rebuild()
+        res["rebuild"] = rebuild_res
         repo.log_flow_complete(task_id, res)
         return res
     except Exception as e:
