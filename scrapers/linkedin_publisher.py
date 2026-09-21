@@ -185,7 +185,7 @@ class LinkedInPublisher:
         human_sleep(2.0, 3.5)
 
         # Check for intermediate 'We are signing you in' / 'Estamos dando acesso' screen transition
-        for _ in range(8):
+        for _ in range(15):
             if self.is_logged_in(page):
                 break
             try:
