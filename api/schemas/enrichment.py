@@ -109,6 +109,9 @@ class DecisionMakerProfile(BaseModel):
     ] = Field(description="Nível hierárquico na organização")
     departamento: str = Field(description="Área/Departamento (ex: Tecnologia, Vendas, Operações, Financeiro, Diretoria Geral)")
     linkedin_url: Optional[str] = Field(default=None, description="URL direta do perfil pessoal no LinkedIn (se identificada)")
+    email_provavel: Optional[str] = Field(default=None, description="E-mail corporativo provável baseado no padrão da empresa")
+    padrao_email: Optional[str] = Field(default=None, description="Formato/padrão de e-mail corporativo identificado na organização")
+    telefone_contato: Optional[str] = Field(default=None, description="Telefone institucional ou direto para contato")
     localizacao: Optional[str] = Field(default=None, description="Cidade ou região informada no perfil")
     vinculo_atual_confirmado: bool = Field(
         default=True,

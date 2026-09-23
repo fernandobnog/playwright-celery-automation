@@ -9,9 +9,13 @@ Zero CRM lock-in: Returns standalone enriched data directly to callers.
 """
 
 import logging
+import re
 import time
+import unicodedata
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
+
+import httpx
 
 from api.schemas.enrichment import (
     CadastralData,
@@ -254,11 +258,40 @@ def enrich_company_pipeline(
             break
 
     site_extracted_content = ""
+    site_emails = set()
+    site_phones = set()
     if request.deep_scrape_website and official_website_url:
         try:
             logger.info("Extracting clean page content from official domain: %s", official_website_url)
             page_data = ai_extractor.extract(official_website_url, max_length=4500, engine="fast")
             site_extracted_content = page_data.get("content", "")
+
+            # Regex scanning of clean DOM and links
+            raw_text = site_extracted_content + " " + " ".join([l.get("url", "") for l in page_data.get("links", [])])
+            for em in re.findall(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b', raw_text):
+                if not any(ign in em.lower() for ign in ["example.com", "wix.com", "domain.com", ".png", ".jpg", ".webp"]):
+                    site_emails.add(em.lower())
+
+            for ph in re.findall(r'\(?\d{2}\)?\s*(?:9\s*)?\d{4}[-\s]\d{4}', raw_text):
+                if not ph.startswith("(00") and not ph.startswith("(99"):
+                    site_phones.add(ph.strip())
+
+            # Attempt quick fetch of /contato or /fale-conosco
+            try:
+                base_url = f"{urlparse(official_website_url).scheme}://{urlparse(official_website_url).netloc}"
+                with httpx.Client(timeout=4, follow_redirects=True) as http_client:
+                    for c_path in ["/contato", "/fale-conosco"]:
+                        resp_c = http_client.get(f"{base_url}{c_path}")
+                        if resp_c.status_code == 200:
+                            for em in re.findall(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b', resp_c.text):
+                                if not any(ign in em.lower() for ign in ["example.com", "wix.com", ".png", ".jpg", ".webp"]):
+                                    site_emails.add(em.lower())
+                            for ph in re.findall(r'\(?\d{2}\)?\s*(?:9\s*)?\d{4}[-\s]\d{4}', resp_c.text):
+                                if not ph.startswith("(00") and not ph.startswith("(99"):
+                                    site_phones.add(ph.strip())
+                            break
+            except Exception:
+                pass
         except Exception as e_site:
             logger.warning("Could not extract deep content from %s: %s", official_website_url, e_site)
 
@@ -350,7 +383,21 @@ def enrich_company_pipeline(
         enriched_response.dados_cadastrais.qsa = cnpj_registry_data.get("qsa", [])
         if not enriched_response.dados_cadastrais.nome_fantasia:
             enriched_response.dados_cadastrais.nome_fantasia = cnpj_registry_data["nome_fantasia"] or company_name
+        for ph in cnpj_registry_data.get("telefones", []):
+            if ph not in enriched_response.presenca_digital.telefones:
+                enriched_response.presenca_digital.telefones.append(ph)
+        for em in cnpj_registry_data.get("emails", []):
+            if em not in enriched_response.presenca_digital.emails:
+                enriched_response.presenca_digital.emails.append(em)
         enriched_response.inteligencia_comercial.nivel_confianca = "ALTA"
+
+    for ph in site_phones:
+        if ph not in enriched_response.presenca_digital.telefones:
+            enriched_response.presenca_digital.telefones.append(ph)
+
+    for em in site_emails:
+        if em not in enriched_response.presenca_digital.emails:
+            enriched_response.presenca_digital.emails.append(em)
 
     # Attach metadata
     enriched_response.nome_pesquisado = company_name
@@ -404,6 +451,9 @@ Diretrizes obrigatórias:
    - Escreva uma análise pragmática de 2-3 frases orientando o time comercial: qual dos decisores encontrados é o melhor ponto de entrada para uma reunião e qual dor de negócio deve ser usada na abertura.
 5. Sócios/Administradores da Receita Federal (QSA) e Imprensa:
    - Se houver administradores identificados no QUADRO DE SÓCIOS E ADMINISTRADORES (QSA) da Receita Federal ou em notícias de imprensa de negócios (anúncio/nomeação de CEO/diretor), inclua-os obrigatoriamente como decisores C-Level / Sócio-Fundador com vinculo_atual_confirmado=true. Se não houver link direto do LinkedIn, deixe linkedin_url como null.
+6. Enriquecimento de Contato e E-mail Corporativo:
+   - Com base no domínio oficial da empresa ou exemplos de e-mails corporativos identificados nos snippets, estime o 'email_provavel' de cada decisor (sem acentos e em minúsculas) e indique a fórmula no campo 'padrao_email' (ex: '{primeiro_nome}.{sobrenome}@{dominio}').
+   - Se houver telefone da matriz/sede ou comercial disponível nas evidências, preencha 'telefone_contato'.
 """
 
 
@@ -554,6 +604,38 @@ def find_decision_makers_pipeline(
             decisores=[],
             analise_estrategica_contato=f"Foram identificados {len(collected_results)} resultados. Recomenda-se abordagem direta aos perfis listados.",
         )
+
+    # 4. Contact enrichment: compute probable corporate email and pattern for decision makers
+    corp_domain = None
+    if request.website_or_domain:
+        try:
+            d = urlparse(request.website_or_domain).netloc.lower()
+            if d.startswith("www."):
+                d = d[4:]
+            corp_domain = d
+        except Exception:
+            pass
+
+    for item in collected_results:
+        txt = f"{item.get('title', '')} {item.get('snippet', '')}"
+        for em in re.findall(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b', txt):
+            dom = em.lower().split("@")[-1]
+            if not any(ign in dom for ign in ["gmail.com", "hotmail.com", "yahoo.com", "outlook.com", "wix.com"]):
+                corp_domain = dom
+                break
+
+    for dm in response.decisores:
+        if not dm.email_provavel and corp_domain:
+            clean_name = unicodedata.normalize('NFKD', dm.nome).encode('ascii', 'ignore').decode('utf-8').lower()
+            parts = [p for p in re.sub(r'[^a-z\s]', '', clean_name).split() if len(p) > 1]
+            if len(parts) >= 2:
+                first = parts[0]
+                last = parts[-1]
+                dm.email_provavel = f"{first}.{last}@{corp_domain}"
+                dm.padrao_email = f"{{nome}}.{{sobrenome}}@{corp_domain}"
+            elif len(parts) == 1:
+                dm.email_provavel = f"{parts[0]}@{corp_domain}"
+                dm.padrao_email = f"{{nome}}@{corp_domain}"
 
     response.company_name = company_name
     response.total_encontrados = len(response.decisores)

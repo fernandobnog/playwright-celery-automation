@@ -56,6 +56,20 @@ def format_cnpj(digits: str) -> str:
     return digits
 
 
+def format_phone(ddd_tel: str) -> Optional[str]:
+    """Formats raw digits into Brazilian phone format (XX) XXXX-XXXX or (XX) 9XXXX-XXXX."""
+    if not ddd_tel:
+        return None
+    d = re.sub(r"\D", "", str(ddd_tel))
+    if len(d) == 10:
+        return f"({d[:2]}) {d[2:6]}-{d[6:]}"
+    elif len(d) == 11:
+        return f"({d[:2]}) {d[2:7]}-{d[7:]}"
+    elif len(d) >= 8:
+        return str(ddd_tel).strip()
+    return None
+
+
 def consult_cnpj_public_api(cnpj: str, timeout: int = 5) -> Optional[Dict[str, Any]]:
     """
     Queries Minha Receita (primary) and BrasilAPI (fallback) for official federal registry data.
@@ -89,6 +103,19 @@ def consult_cnpj_public_api(cnpj: str, timeout: int = 5) -> Optional[Dict[str, A
                             "tipo": "Pessoa Física" if s.get("identificador_de_socio") == 2 else "Pessoa Jurídica",
                         })
 
+                telefones = []
+                for k in ("ddd_telefone_1", "ddd_telefone_2", "telefone", "ddd_fax"):
+                    val = data.get(k)
+                    if val:
+                        p = format_phone(str(val))
+                        if p and p not in telefones:
+                            telefones.append(p)
+
+                emails = []
+                raw_email = (data.get("email") or "").strip().lower()
+                if raw_email and "@" in raw_email:
+                    emails.append(raw_email)
+
                 formatted = {
                     "cnpj": format_cnpj(clean_cnpj),
                     "cnpj_limpo": clean_cnpj,
@@ -104,6 +131,8 @@ def consult_cnpj_public_api(cnpj: str, timeout: int = 5) -> Optional[Dict[str, A
                     "numero": data.get("numero"),
                     "bairro": data.get("bairro"),
                     "cep": data.get("cep"),
+                    "telefones": telefones,
+                    "emails": emails,
                     "qsa": qsa,
                     "fonte": "Receita Federal (Minha Receita)",
                 }
@@ -136,6 +165,19 @@ def consult_cnpj_public_api(cnpj: str, timeout: int = 5) -> Optional[Dict[str, A
                             "tipo": "Pessoa Física",
                         })
 
+                telefones = []
+                for k in ("ddd_telefone_1", "ddd_telefone_2", "telefone", "ddd_fax"):
+                    val = data.get(k)
+                    if val:
+                        p = format_phone(str(val))
+                        if p and p not in telefones:
+                            telefones.append(p)
+
+                emails = []
+                raw_email = (data.get("email") or "").strip().lower()
+                if raw_email and "@" in raw_email:
+                    emails.append(raw_email)
+
                 formatted = {
                     "cnpj": format_cnpj(clean_cnpj),
                     "cnpj_limpo": clean_cnpj,
@@ -151,6 +193,8 @@ def consult_cnpj_public_api(cnpj: str, timeout: int = 5) -> Optional[Dict[str, A
                     "numero": data.get("numero"),
                     "bairro": data.get("bairro"),
                     "cep": data.get("cep"),
+                    "telefones": telefones,
+                    "emails": emails,
                     "qsa": qsa,
                     "fonte": "Receita Federal (BrasilAPI)",
                 }
