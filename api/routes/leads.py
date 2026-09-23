@@ -6,13 +6,13 @@ Receives website contact form events and handles human-in-the-loop approvals.
 import hashlib
 import logging
 from typing import Any, Dict, Optional
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from redis import Redis
 
 from core.config import settings
-from core.security import verify_approval_token
+from core.security import verify_approval_token, verify_internal_api_key
 from flows.flow_lead_qualification import task_process_lead_qualification
 from integrations.evolution import EvolutionClient
 
@@ -39,7 +39,7 @@ class LeadContactPayload(BaseModel):
     formattedMessage: Optional[str] = Field(default=None, description="Preformatted message for AI audit")
 
 
-@router.post("/contact-form", status_code=status.HTTP_202_ACCEPTED)
+@router.post("/contact-form", status_code=status.HTTP_202_ACCEPTED, dependencies=[Depends(verify_internal_api_key)])
 def receive_contact_form(payload: LeadContactPayload) -> Dict[str, Any]:
     """
     Receives contact form submission from the personal website.

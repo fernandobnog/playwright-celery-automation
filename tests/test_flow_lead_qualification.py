@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.main import app
+from core.config import settings
 from core.security import create_approval_token, verify_approval_token
 from flows.flow_lead_qualification import (
     parse_name,
@@ -128,7 +129,7 @@ def test_task_process_lead_qualification_approved():
 # ==============================================================================
 # 3. API Route Tests
 # ==============================================================================
-client = TestClient(app)
+client = TestClient(app, headers={"X-API-Key": settings.INTERNAL_API_KEY or "omniflow_232750db9cac2682c20ffadd0bce268f2d85764bc1149921"})
 
 
 def test_api_contact_form_endpoint():

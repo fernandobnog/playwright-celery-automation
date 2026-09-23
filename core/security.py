@@ -212,8 +212,13 @@ class InternalNetworkMiddleware(BaseHTTPMiddleware):
         if not self.enabled:
             return await call_next(request)
 
-        # Allow token-authenticated public approval callback
-        if request.url.path.startswith("/api/v1/leads/approve"):
+        # Allow token-authenticated public callbacks (one-click links sent via email)
+        PUBLIC_TOKEN_PATHS = (
+            "/api/v1/leads/approve",
+            "/api/v1/editorial/select",
+            "/api/v1/editorial/publish",
+        )
+        if request.url.path.startswith(PUBLIC_TOKEN_PATHS):
             return await call_next(request)
 
         client_host = request.client.host if request.client else None

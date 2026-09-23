@@ -116,12 +116,10 @@ app.include_router(
 app.include_router(
     leads_router,
     prefix="/api/v1",
-    dependencies=[Depends(verify_internal_api_key)],
 )
 app.include_router(
     editorial_router,
     prefix="/api/v1",
-    dependencies=[Depends(verify_internal_api_key)],
 )
 app.include_router(
     proposals_router,
