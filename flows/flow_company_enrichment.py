@@ -633,7 +633,8 @@ def extract_linkedin_company_pipeline(
     company_clean = company_name.strip()
 
     loc_str = f" {location_hint}" if location_hint else ""
-    query = f'site:linkedin.com/company/ "{company_clean}"{loc_str}'
+    br_str = " Brasil" if "brasil" not in company_clean.lower() and not location_hint else ""
+    query = f'(site:br.linkedin.com/company/ OR site:linkedin.com/company/) "{company_clean}"{loc_str}{br_str}'
 
     search_items = []
 
@@ -732,20 +733,21 @@ def enrich_unified_pipeline(
         deep_scrape_website=request.deep_scrape,
     )
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        f_comp = executor.submit(enrich_company_pipeline, comp_req, gemini)
-        f_li = executor.submit(
-            extract_linkedin_company_pipeline,
-            company_name=request.name,
-            known_linkedin_url=None,
-            location_hint=request.location,
-            gemini_client=gemini,
-        )
-        comp_res = f_comp.result()
-        linkedin_company = f_li.result()
+    # 1. Company Profile Enrichment
+    comp_res = enrich_company_pipeline(comp_req, gemini)
+
+    # 2. Extract LinkedIn Company Page Profile (institutional data, tagline, employees, jobs)
+    linkedin_company = extract_linkedin_company_pipeline(
+        company_name=request.name,
+        known_linkedin_url=comp_res.presenca_digital.linkedin_url,
+        location_hint=request.location,
+        gemini_client=gemini,
+    )
 
     if comp_res.presenca_digital.linkedin_url and not linkedin_company.url:
         linkedin_company.url = comp_res.presenca_digital.linkedin_url
+    if linkedin_company.url and not comp_res.presenca_digital.linkedin_url:
+        comp_res.presenca_digital.linkedin_url = linkedin_company.url
 
     # 3. Discover decision makers using commercial brand name and official QSA
     target_company = request.name or comp_res.dados_cadastrais.nome_fantasia or comp_res.nome_pesquisado
