@@ -354,3 +354,94 @@ def find_valid_executive_email(
                 logger.debug("Delegation to verifier service %s failed: %s; falling back to direct", svc_url, e)
 
     return _find_valid_executive_email_direct(full_name, domain, alternate_domain)
+
+
+def filter_valid_emails(emails: List[str], max_to_verify: int = 10) -> List[str]:
+    """
+    Filters a list of email addresses, returning only those that pass:
+    1. Basic RFC syntax validation
+    2. Are not from personal/free providers (gmail, hotmail, etc.)
+    3. For the first max_to_verify addresses: SMTP verification returning non-INVALIDO status
+
+    Addresses that cannot be confirmed as definitively invalid (INCONCLUSIVO, ERRO_CONEXAO,
+    CATCH_ALL, HEURISTICA) are kept — only explicit INVALIDO (5xx rejection) are removed.
+    """
+    PERSONAL_DOMAINS = {
+        "gmail.com", "hotmail.com", "yahoo.com", "outlook.com", "live.com",
+        "bol.com.br", "uol.com.br", "terra.com.br", "ig.com.br",
+        "icloud.com", "me.com", "protonmail.com",
+    }
+    NOISE_PATTERNS = [
+        "example.com", "wix.com", "domain.com", "seudominio.com",
+        "noreply", "no-reply", "donotreply",
+    ]
+
+    valid = []
+    verified_count = 0
+
+    for em in emails:
+        em = em.strip().lower()
+        if not em or not validate_email_syntax(em):
+            continue
+        domain = em.split("@")[-1]
+        if domain in PERSONAL_DOMAINS:
+            continue
+        if any(noise in em for noise in NOISE_PATTERNS):
+            continue
+
+        # SMTP verify the first max_to_verify unique-domain emails
+        if verified_count < max_to_verify:
+            try:
+                result = verify_email_smtp(em)
+                status = result.get("status", "")
+                if status == "INVALIDO":
+                    logger.debug("filter_valid_emails: dropped %s (INVALIDO)", em)
+                    verified_count += 1
+                    continue
+                verified_count += 1
+            except Exception as e:
+                logger.debug("filter_valid_emails: could not verify %s: %s — keeping", em, e)
+
+        valid.append(em)
+
+    return valid
+
+
+_PHONE_DIGITS_RE = re.compile(r"\d")
+_PHONE_CLEAN_RE = re.compile(r"[\s\-\.\(\)]+")
+
+
+def normalize_phone(raw: str) -> Optional[str]:
+    """
+    Normalizes a Brazilian phone string to (XX) XXXX-XXXX or (XX) 9XXXX-XXXX.
+    Returns None for obviously invalid inputs.
+    """
+    if not raw:
+        return None
+    digits = "".join(_PHONE_DIGITS_RE.findall(str(raw)))
+    # Strip country code 55
+    if digits.startswith("55") and len(digits) in (12, 13):
+        digits = digits[2:]
+    if len(digits) == 10:
+        return f"({digits[:2]}) {digits[2:6]}-{digits[6:]}"
+    if len(digits) == 11:
+        return f"({digits[:2]}) {digits[2:7]}-{digits[7:]}"
+    return None
+
+
+def filter_valid_phones(phones: List[str]) -> List[str]:
+    """
+    Normalizes and deduplicates a list of Brazilian phone numbers.
+    Removes malformed entries (not 10–11 digits after stripping non-digits).
+    """
+    seen: set = set()
+    valid: List[str] = []
+    for ph in phones:
+        normalized = normalize_phone(ph)
+        if normalized and normalized not in seen:
+            # Basic sanity: DDD 11–99, not test numbers
+            ddd = normalized[1:3]
+            if ddd.isdigit() and 11 <= int(ddd) <= 99:
+                seen.add(normalized)
+                valid.append(normalized)
+    return valid

@@ -45,7 +45,7 @@ from integrations.receita import (
     extract_cnpjs_from_search_results,
     format_cnpj,
 )
-from integrations.email_verifier import find_valid_executive_email
+from integrations.email_verifier import find_valid_executive_email, filter_valid_emails, filter_valid_phones
 from scrapers.ai_extractor import ai_extractor
 from scrapers.google_scraper import GoogleSearchScraper
 
@@ -384,7 +384,7 @@ def enrich_company_pipeline(
         enriched_response.dados_cadastrais.qsa = cnpj_registry_data.get("qsa", [])
         if not enriched_response.dados_cadastrais.nome_fantasia:
             enriched_response.dados_cadastrais.nome_fantasia = cnpj_registry_data["nome_fantasia"] or company_name
-        for ph in cnpj_registry_data.get("telefones", []):
+        for ph in filter_valid_phones(cnpj_registry_data.get("telefones", [])):
             if ph not in enriched_response.presenca_digital.telefones:
                 enriched_response.presenca_digital.telefones.append(ph)
         for em in cnpj_registry_data.get("emails", []):
@@ -392,13 +392,23 @@ def enrich_company_pipeline(
                 enriched_response.presenca_digital.emails.append(em)
         enriched_response.inteligencia_comercial.nivel_confianca = "ALTA"
 
-    for ph in site_phones:
+    # Merge and deduplicate site phones (normalized)
+    for ph in filter_valid_phones(list(site_phones)):
         if ph not in enriched_response.presenca_digital.telefones:
             enriched_response.presenca_digital.telefones.append(ph)
 
-    for em in site_emails:
-        if em not in enriched_response.presenca_digital.emails:
-            enriched_response.presenca_digital.emails.append(em)
+    # Normalize phones already added by Gemini synthesis
+    enriched_response.presenca_digital.telefones = filter_valid_phones(
+        enriched_response.presenca_digital.telefones
+    )
+
+    # Collect all candidate emails and SMTP-validate them, dropping confirmed invalid ones
+    all_candidate_emails = list(dict.fromkeys(
+        enriched_response.presenca_digital.emails + list(site_emails)
+    ))
+    logger.info("Validating %d candidate emails for '%s' via SMTP filter", len(all_candidate_emails), company_name)
+    enriched_response.presenca_digital.emails = filter_valid_emails(all_candidate_emails, max_to_verify=8)
+    logger.info("After SMTP filter: %d valid emails retained", len(enriched_response.presenca_digital.emails))
 
     # Attach metadata
     enriched_response.nome_pesquisado = company_name
@@ -671,6 +681,13 @@ def find_decision_makers_pipeline(
                 dm.status_email = "HEURISTICA_PADRAO"
 
     response.company_name = company_name
+
+    # Clear emails that were confirmed invalid via SMTP — don't return bad contact info
+    for dm in response.decisores:
+        if dm.status_email == "INVALIDO":
+            dm.email_provavel = None
+            dm.padrao_email = None
+
     response.total_encontrados = len(response.decisores)
     elapsed = round(time.time() - start_time, 2)
     response.execution_time_seconds = elapsed
