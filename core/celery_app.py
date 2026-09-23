@@ -63,6 +63,8 @@ celery_app.conf.update(
         "flows.flow_content_deep_writer.task_deep_content_generation": {"queue": "flows"},
         "flows.flow_content_publisher.task_publish_approved_editorial": {"queue": "flows"},
         "flows.flow_company_enrichment.task_enrich_company": {"queue": "flows"},
+        "flows.flow_company_enrichment.task_find_decision_makers": {"queue": "flows"},
+        "flows.flow_company_enrichment.task_enrich_full_company": {"queue": "flows"},
     },
 
     # Beat Periodic Schedules (Automations replacing n8n scheduled triggers)

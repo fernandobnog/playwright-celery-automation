@@ -160,3 +160,129 @@ def test_enrich_company_api_endpoints():
         data_get = resp_get.json()
         assert data_get["status"] == "SUCCESS"
         assert data_get["perfil_mercado"]["setor_atuacao"] == "Automotivo / E-commerce"
+
+
+def test_find_decision_makers_pipeline_mocked():
+    """Validates the decision makers discovery pipeline with mocked Google search and Gemini."""
+    from api.schemas.enrichment import (
+        DecisionMakerProfile,
+        DecisionMakersQueryPlan,
+        DecisionMakersRequest,
+        DecisionMakersResponse,
+    )
+    from flows.flow_company_enrichment import find_decision_makers_pipeline
+
+    mock_gemini = MagicMock()
+
+    mock_plan = DecisionMakersQueryPlan(
+        query_c_level='site:linkedin.com/in/ "Matera" (CEO OR CTO OR Founder)',
+        query_directors_heads='site:linkedin.com/in/ "Matera" (Diretor OR "Head de")',
+    )
+
+    mock_response = DecisionMakersResponse(
+        status="SUCCESS",
+        company_name="Matera",
+        total_encontrados=2,
+        decisores=[
+            DecisionMakerProfile(
+                nome="Carlos Netto",
+                cargo="Co-founder e CEO",
+                nivel_hierarquico="C-Level / Sócio-Fundador",
+                departamento="Diretoria Geral",
+                linkedin_url="https://br.linkedin.com/in/carlosnetto",
+                localizacao="Campinas, SP",
+                vinculo_atual_confirmado=True,
+                resumo_experiencia="Co-fundador da Matera, liderando expansão de soluções bancárias.",
+            ),
+            DecisionMakerProfile(
+                nome="Roberto Matos",
+                cargo="Diretor de Tecnologia (CTO)",
+                nivel_hierarquico="C-Level / Sócio-Fundador",
+                departamento="Tecnologia",
+                linkedin_url="https://br.linkedin.com/in/robertomatos",
+                localizacao="Campinas, SP",
+                vinculo_atual_confirmado=True,
+                resumo_experiencia="Responsável pela arquitetura de sistemas Pix e core banking.",
+            ),
+        ],
+        analise_estrategica_contato="Para propostas técnicas, abordar o CTO Roberto Matos; para parcerias corporativas, o CEO Carlos Netto.",
+    )
+
+    mock_gemini.generate_structured.side_effect = [mock_plan, mock_response]
+
+    mock_search = {
+        "organic_results": [
+            {
+                "title": "Carlos Netto - Co-founder e CEO - Matera | LinkedIn",
+                "url": "https://br.linkedin.com/in/carlosnetto",
+                "snippet": "Campinas, São Paulo, Brasil · Co-founder e CEO na Matera",
+            },
+            {
+                "title": "Roberto Matos - Chief Technology Officer - Matera | LinkedIn",
+                "url": "https://br.linkedin.com/in/robertomatos",
+                "snippet": "Campinas, São Paulo, Brasil · CTO na Matera · Mais de 500 conexões",
+            },
+        ]
+    }
+
+    req = DecisionMakersRequest(company_name="Matera", max_results=5)
+
+    with patch("flows.flow_company_enrichment.GoogleSearchScraper") as MockScraper:
+        mock_inst = MagicMock()
+        mock_inst.__enter__.return_value = mock_inst
+        mock_inst.search.return_value = mock_search
+        MockScraper.return_value = mock_inst
+
+        result = find_decision_makers_pipeline(req, gemini_client=mock_gemini)
+
+    assert result.status == "SUCCESS"
+    assert result.company_name == "Matera"
+    assert result.total_encontrados == 2
+    assert result.decisores[0].nome == "Carlos Netto"
+    assert result.decisores[0].nivel_hierarquico == "C-Level / Sócio-Fundador"
+    assert "Roberto Matos" in result.analise_estrategica_contato
+
+
+def test_decision_makers_api_endpoints():
+    """Tests POST and GET endpoints for decision makers discovery."""
+    from api.schemas.enrichment import (
+        DecisionMakerProfile,
+        DecisionMakersResponse,
+        FullCompanyEnrichmentResponse,
+    )
+
+    mock_dm_resp = DecisionMakersResponse(
+        status="SUCCESS",
+        company_name="Totvs",
+        total_encontrados=1,
+        decisores=[
+            DecisionMakerProfile(
+                nome="Dennis Herszkowicz",
+                cargo="Presidente e CEO",
+                nivel_hierarquico="C-Level / Sócio-Fundador",
+                departamento="Diretoria Geral",
+                linkedin_url="https://br.linkedin.com/in/dennisherszkowicz",
+                vinculo_atual_confirmado=True,
+            )
+        ],
+        analise_estrategica_contato="Abordagem no nível de diretoria executiva.",
+        execution_time_seconds=1.2,
+    )
+
+    with patch("api.routes.enrichment.find_decision_makers_pipeline", return_value=mock_dm_resp):
+        # 1. POST /api/v1/enrich/decision-makers
+        resp_post = client.post(
+            "/api/v1/enrich/decision-makers",
+            json={"company_name": "Totvs", "max_results": 5},
+        )
+        assert resp_post.status_code == 200
+        data_post = resp_post.json()
+        assert data_post["status"] == "SUCCESS"
+        assert len(data_post["decisores"]) == 1
+        assert data_post["decisores"][0]["nome"] == "Dennis Herszkowicz"
+
+        # 2. GET /api/v1/enrich/decision-makers
+        resp_get = client.get("/api/v1/enrich/decision-makers?name=Totvs&max_results=5")
+        assert resp_get.status_code == 200
+        data_get = resp_get.json()
+        assert data_get["total_encontrados"] == 1

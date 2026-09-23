@@ -90,3 +90,77 @@ class CompanyEnrichmentResponse(BaseModel):
     perfil_mercado: MarketProfile
     inteligencia_comercial: CommercialIntelligence
     execution_time_seconds: Optional[float] = None
+
+
+# ==============================================================================
+# 2. Schemas for LinkedIn Decision Makers Discovery Pipeline
+# ==============================================================================
+class DecisionMakerProfile(BaseModel):
+    """Perfil profissional de tomador de decisão identificado."""
+    nome: str = Field(description="Nome do executivo/gestor")
+    cargo: str = Field(description="Cargo atual ou principal título profissional")
+    nivel_hierarquico: Literal[
+        "C-Level / Sócio-Fundador",
+        "Diretoria",
+        "Gerência / Head",
+        "Coordenação / Especialista",
+        "Outro",
+    ] = Field(description="Nível hierárquico na organização")
+    departamento: str = Field(description="Área/Departamento (ex: Tecnologia, Vendas, Operações, Financeiro, Diretoria Geral)")
+    linkedin_url: str = Field(description="URL direta do perfil pessoal no LinkedIn")
+    localizacao: Optional[str] = Field(default=None, description="Cidade ou região informada no perfil")
+    vinculo_atual_confirmado: bool = Field(
+        default=True,
+        description="Se as evidências indicam que a pessoa atua atualmente na empresa (e não apenas experiência passada)",
+    )
+    resumo_experiencia: Optional[str] = Field(default=None, description="Resumo das atribuições ou histórico profissional citado no snippet")
+
+
+class DecisionMakersQueryPlan(BaseModel):
+    """Consultas geradas pelo Gemini para encontrar decisores no LinkedIn via Google Search."""
+    query_c_level: str = Field(description="Busca voltada a C-Level, Sócios, Founders e VPs")
+    query_directors_heads: str = Field(description="Busca voltada a Diretores, Heads e Gerentes de áreas-chave")
+
+
+class DecisionMakersRequest(BaseModel):
+    """Requisição para busca de tomadores de decisão de uma empresa no LinkedIn."""
+    company_name: str = Field(
+        ...,
+        min_length=1,
+        max_length=200,
+        description="Nome da empresa para busca de decisores",
+        examples=["Matera", "Kavak", "Totvs"],
+    )
+    website_or_domain: Optional[str] = Field(
+        default=None,
+        description="Domínio oficial da empresa (ex: matera.com) para auxiliar na precisão da busca",
+    )
+    target_departments: Optional[List[str]] = Field(
+        default_factory=lambda: ["Diretoria", "Tecnologia", "Vendas", "Operações", "Financeiro"],
+        description="Departamentos de interesse prioritário",
+    )
+    target_seniorities: Optional[List[str]] = Field(
+        default_factory=lambda: ["C-Level", "Diretor", "VP", "Head", "Gerente", "Founder"],
+        description="Níveis de senioridade buscados",
+    )
+    max_results: int = Field(default=10, ge=1, le=25, description="Quantidade máxima de perfis a retornar")
+
+
+class DecisionMakersResponse(BaseModel):
+    """Resposta com lista estruturada de tomadores de decisão e estratégia de abordagem."""
+    status: str = Field(default="SUCCESS")
+    company_name: str
+    total_encontrados: int
+    decisores: List[DecisionMakerProfile] = Field(default_factory=list)
+    analise_estrategica_contato: str = Field(
+        description="Recomendação da IA de qual cargo/perfil deve ser abordado primeiro e por qual motivo estratégico"
+    )
+    execution_time_seconds: Optional[float] = None
+
+
+class FullCompanyEnrichmentResponse(BaseModel):
+    """Enriquecimento 360° unificado: dados da empresa + tomadores de decisão."""
+    status: str = Field(default="SUCCESS")
+    empresa: CompanyEnrichmentResponse
+    decisores: DecisionMakersResponse
+    execution_time_seconds: Optional[float] = None
