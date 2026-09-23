@@ -10,7 +10,7 @@ Zero CRM lock-in: Returns standalone enriched data directly to callers.
 
 import logging
 import time
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 from api.schemas.enrichment import (
@@ -33,8 +33,14 @@ from api.schemas.enrichment import (
     SearchRefinementPlan,
     UnifiedEnrichmentResponse,
 )
+import concurrent.futures
 from core.celery_app import celery_app
 from integrations.gemini import GeminiClient
+from integrations.receita import (
+    consult_cnpj_public_api,
+    extract_cnpjs_from_search_results,
+    format_cnpj,
+)
 from scrapers.ai_extractor import ai_extractor
 from scrapers.google_scraper import GoogleSearchScraper
 
@@ -53,12 +59,14 @@ DIRECTORY_DOMAINS = {
 
 QUERY_PLANNER_SYSTEM_INSTRUCTION = """
 Você é um analista sênior de OSINT e inteligência corporativa B2B.
-Sua missão é gerar exatamente 3 consultas otimizadas e específicas para o Google Search com o objetivo de identificar:
-1. O site oficial e apresentação institucional da empresa.
-2. O CNPJ, Razão Social oficial e dados cadastrais públicos na Receita Federal / portais brasileiros.
-3. O perfil corporativo (Company Page) no LinkedIn.
+Sua missão é gerar exatamente 3 consultas otimizadas e limpas para o Google Search com o objetivo de identificar:
+1. O site oficial e apresentação institucional da empresa (ex: '{company_name} Brasil site oficial' ou '{company_name} sobre nós').
+2. O CNPJ, Razão Social oficial e dados cadastrais públicos na Receita Federal / portais brasileiros (ex: '{company_name} Brasil CNPJ Razao Social').
+3. O perfil corporativo (Company Page) no LinkedIn (ex: '{company_name} site:linkedin.com/company').
 
-Use operadores de busca (como aspas, OR, site:) quando oportuno para desambiguar e garantir relevância.
+Diretrizes obrigatórias:
+- Se a marca for internacional ou conhecida globalmente, use obrigatoriamente o termo 'Brasil' na consulta cadastral para encontrar a subsidiária/CNPJ brasileiro.
+- Mantenha as consultas limpas e diretas: EVITE operadores booleanos complexos com parênteses aninhados (como '("CNPJ" OR "Razao Social")') para prevenir detecção anti-bot do Google.
 """
 
 SYNTHESIS_SYSTEM_INSTRUCTION = """
@@ -172,38 +180,68 @@ def enrich_company_pipeline(
     except Exception as e_plan:
         logger.warning("Query planner fallback used (%s)", e_plan)
         loc_clause = f" {request.location_hint}" if request.location_hint else ""
+        br_clause = " Brasil" if "brasil" not in company_name.lower() else ""
         plan = SearchRefinementPlan(
-            primary_query=f'"{company_name}"{loc_clause} site oficial',
-            fiscal_query=f'"{company_name}"{loc_clause} CNPJ OR "Razao Social"',
-            social_query=f'"{company_name}" site:linkedin.com/company',
+            primary_query=f'{company_name}{loc_clause} site oficial',
+            fiscal_query=f'{company_name}{br_clause} CNPJ Razao Social',
+            social_query=f'{company_name} site:linkedin.com/company',
             assumptions_and_context="Busca padrão baseada no nome informado.",
         )
 
     # --------------------------------------------------------------------------
-    # Stage 2: Public Google Search Extractions
+    # Stage 2: Public Google Search Extractions (Parallel Execution)
     # --------------------------------------------------------------------------
     collected_results = []
     seen_urls = set()
 
-    # 1. Primary organic search (site & institutional)
-    try:
-        res_primary = execute_google_search(plan.primary_query, num_results=6)
-        for item in res_primary.get("organic_results", []):
-            if item["url"] not in seen_urls:
-                seen_urls.add(item["url"])
-                collected_results.append(item)
-    except Exception as e_prim:
-        logger.warning("Primary search failed: %s", e_prim)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        f_primary = executor.submit(execute_google_search, plan.primary_query, 6)
+        f_fiscal = executor.submit(execute_google_search, plan.fiscal_query, 6)
 
-    # 2. Fiscal search (CNPJ & registry data)
-    try:
-        res_fiscal = execute_google_search(plan.fiscal_query, num_results=5)
-        for item in res_fiscal.get("organic_results", []):
-            if item["url"] not in seen_urls:
-                seen_urls.add(item["url"])
-                collected_results.append(item)
-    except Exception as e_fisc:
-        logger.warning("Fiscal search failed: %s", e_fisc)
+        try:
+            res_primary = f_primary.result()
+            for item in res_primary.get("organic_results", []):
+                if item["url"] not in seen_urls:
+                    seen_urls.add(item["url"])
+                    collected_results.append(item)
+        except Exception as e_prim:
+            logger.warning("Primary search failed: %s", e_prim)
+
+        try:
+            res_fiscal = f_fiscal.result()
+            for item in res_fiscal.get("organic_results", []):
+                if item["url"] not in seen_urls:
+                    seen_urls.add(item["url"])
+                    collected_results.append(item)
+        except Exception as e_fisc:
+            logger.warning("Fiscal search failed: %s", e_fisc)
+
+    # --------------------------------------------------------------------------
+    # Stage 2.5: Official Corporate Registry Resolution (Minha Receita / BrasilAPI)
+    # --------------------------------------------------------------------------
+    candidate_cnpjs = extract_cnpjs_from_search_results(collected_results)
+    cnpj_registry_data = None
+    for cand in candidate_cnpjs[:3]:
+        cnpj_registry_data = consult_cnpj_public_api(cand)
+        if cnpj_registry_data:
+            break
+
+    # If no candidate found in snippets, perform focused directory search
+    if not cnpj_registry_data:
+        try:
+            br_term = " Brasil" if "brasil" not in company_name.lower() else ""
+            res_dir = execute_google_search(f'{company_name}{br_term} CNPJ site:cnpj.biz', num_results=3)
+            dir_results = res_dir.get("organic_results", [])
+            for item in dir_results:
+                if item["url"] not in seen_urls:
+                    seen_urls.add(item["url"])
+                    collected_results.append(item)
+            for cand in extract_cnpjs_from_search_results(dir_results)[:3]:
+                cnpj_registry_data = consult_cnpj_public_api(cand)
+                if cnpj_registry_data:
+                    break
+        except Exception as e_dir:
+            logger.warning("Directory CNPJ search fallback error: %s", e_dir)
 
     # --------------------------------------------------------------------------
     # Stage 3: Deep Scraping of Candidate Official Website (Optional)
@@ -229,6 +267,22 @@ def enrich_company_pipeline(
     # --------------------------------------------------------------------------
     evidence_lines = []
     sources_used = []
+
+    if cnpj_registry_data:
+        qsa_summary = ", ".join([f"{s['nome']} ({s.get('cargo', 'Sócio')})" for s in cnpj_registry_data.get("qsa", [])])
+        evidence_lines.append(
+            f"=== REGISTRO OFICIAL DA RECEITA FEDERAL DO BRASIL (AUTORIDADE MÁXIMA) ===\n"
+            f"CNPJ: {cnpj_registry_data['cnpj']}\n"
+            f"Razão Social: {cnpj_registry_data['razao_social']}\n"
+            f"Nome Fantasia: {cnpj_registry_data['nome_fantasia'] or company_name}\n"
+            f"Situação Cadastral: {cnpj_registry_data['situacao_cadastral']}\n"
+            f"Sede: {cnpj_registry_data['sede']}\n"
+            f"CNAE: {cnpj_registry_data.get('cnae_fiscal_descricao')}\n"
+            f"Quadro de Sócios e Administradores (QSA): {qsa_summary}\n"
+            f"Fonte: {cnpj_registry_data.get('fonte')}\n"
+        )
+        sources_used.append("https://minhareceita.org")
+
     for item in collected_results:
         sources_used.append(item["url"])
         evidence_lines.append(
@@ -287,6 +341,17 @@ def enrich_company_pipeline(
             ),
         )
 
+    # Apply high-authority official registry data if verified
+    if cnpj_registry_data:
+        enriched_response.dados_cadastrais.razao_social = cnpj_registry_data["razao_social"]
+        enriched_response.dados_cadastrais.cnpj = cnpj_registry_data["cnpj"]
+        enriched_response.dados_cadastrais.situacao_cadastral = cnpj_registry_data["situacao_cadastral"]
+        enriched_response.dados_cadastrais.sede_localizacao = cnpj_registry_data["sede"]
+        enriched_response.dados_cadastrais.qsa = cnpj_registry_data.get("qsa", [])
+        if not enriched_response.dados_cadastrais.nome_fantasia:
+            enriched_response.dados_cadastrais.nome_fantasia = cnpj_registry_data["nome_fantasia"] or company_name
+        enriched_response.inteligencia_comercial.nivel_confianca = "ALTA"
+
     # Attach metadata
     enriched_response.nome_pesquisado = company_name
     if not enriched_response.inteligencia_comercial.fontes_consultadas:
@@ -313,14 +378,12 @@ def task_enrich_company(payload_dict: dict) -> dict:
 # Pipeline 2: LinkedIn Decision Makers Discovery Pipeline
 # ==============================================================================
 DECISION_MAKERS_PLANNER_INSTRUCTION = """
-Você é um especialista em recrutamento executivo, vendas B2B e técnicas avançadas de busca (Google Dorks) no LinkedIn.
-Sua missão é gerar duas queries de busca no Google que encontrem perfis pessoais de decisores (LinkedIn /in/) da empresa especificada.
-
-Regras obrigatórias para as queries:
-1. Sempre use: site:linkedin.com/in/
-2. Adicione o nome da empresa entre aspas: "{company_name}"
-3. Na primeira query (query_c_level): foque em C-Level, Founders, Sócios, Co-Founders, Diretor Presidente, CEO, CTO, COO, CFO, VP.
-4. Na segunda query (query_directors_heads): foque em Diretores, Heads de Área e Gerentes de alto escalão (Vendas, Tecnologia, Operações, Comercial).
+Você é um especialista em recrutamento executivo, vendas B2B e técnicas avançadas de busca (Google Dorks) no LinkedIn e imprensa de negócios.
+Sua missão é gerar duas queries de busca no Google que encontrem perfis de decisores e líderes de alta gestão da empresa especificada:
+1. 'query_c_level': Busca no LinkedIn focada em C-Level, Founders, Sócios, Co-Founders, Diretor Presidente, CEO, CTO, COO, CFO, VP, Country Manager.
+   - Formato obrigatório: (site:br.linkedin.com/in/ OR site:linkedin.com/in/) "{company_name}" (CEO OR CTO OR COO OR CFO OR Founder OR Sócio OR VP OR "Diretor Presidente" OR "Country Manager")
+2. 'query_directors_heads': Busca no LinkedIn focada em Diretores, Heads de Área e Gerentes de alto escalão (Vendas, Tecnologia, Operações, Comercial, RH, Finanças, CHRO).
+   - Formato obrigatório: (site:br.linkedin.com/in/ OR site:linkedin.com/in/) "{company_name}" (Diretor OR Diretora OR "Head de" OR Gerente OR CHRO OR CMO)
 """
 
 DECISION_MAKERS_SYNTHESIS_INSTRUCTION = """
@@ -333,21 +396,24 @@ Diretrizes obrigatórias:
    - 'vinculo_atual_confirmado' deve ser TRUE se o snippet indicar que a pessoa atua atualmente na empresa.
    - Se o snippet indicar claramente que a pessoa já saiu da empresa (ex: "Ex-Diretor", "Anteriormente na ...", período finalizado no passado), marque FALSE ou descarte se não houver relevância.
 3. Classificação Hierárquica:
-   - "C-Level / Sócio-Fundador": CEO, CTO, CFO, COO, CMO, CPO, Founder, Sócio, Coproprietário, VP.
-   - "Diretoria": Diretor, Diretora.
+   - "C-Level / Sócio-Fundador": CEO, CTO, CFO, COO, CMO, CPO, Founder, Sócio, Coproprietário, VP, Country Manager, Administrador Legal.
+   - "Diretoria": Diretor, Diretora, Diretor Geral.
    - "Gerência / Head": Head, Gerente Sênior, Gerente Geral, Líder.
    - "Coordenação / Especialista": Coordenador, Especialista Principal.
 4. Análise Estratégica de Contato ('analise_estrategica_contato'):
    - Escreva uma análise pragmática de 2-3 frases orientando o time comercial: qual dos decisores encontrados é o melhor ponto de entrada para uma reunião e qual dor de negócio deve ser usada na abertura.
+5. Sócios/Administradores da Receita Federal (QSA) e Imprensa:
+   - Se houver administradores identificados no QUADRO DE SÓCIOS E ADMINISTRADORES (QSA) da Receita Federal ou em notícias de imprensa de negócios (anúncio/nomeação de CEO/diretor), inclua-os obrigatoriamente como decisores C-Level / Sócio-Fundador com vinculo_atual_confirmado=true. Se não houver link direto do LinkedIn, deixe linkedin_url como null.
 """
 
 
 def find_decision_makers_pipeline(
     request: DecisionMakersRequest,
     gemini_client: Optional[GeminiClient] = None,
+    qsa_members: Optional[List[Dict[str, Any]]] = None,
 ) -> DecisionMakersResponse:
     """
-    Discovers management and decision-making professionals on LinkedIn using Google Dorks and AI synthesis.
+    Discovers management and decision-making professionals on LinkedIn and official registry using Google Dorks, QSA, and AI synthesis.
     """
     start_time = time.time()
     company_name = request.company_name.strip()
@@ -364,6 +430,8 @@ def find_decision_makers_pipeline(
         "Gere as 2 queries otimizadas do Google Dork para perfis no LinkedIn."
     )
 
+    loc_suffix = " Brasil" if "brasil" not in company_name.lower() else ""
+
     try:
         plan: DecisionMakersQueryPlan = gemini.generate_structured(
             prompt=planner_prompt,
@@ -375,29 +443,33 @@ def find_decision_makers_pipeline(
     except Exception as e_plan:
         logger.warning("Decision maker query planner fallback used (%s)", e_plan)
         plan = DecisionMakersQueryPlan(
-            query_c_level=f'site:linkedin.com/in/ "{company_name}" (CEO OR CTO OR COO OR CFO OR Founder OR Sócio OR VP)',
-            query_directors_heads=f'site:linkedin.com/in/ "{company_name}" (Diretor OR Diretora OR "Head de" OR Gerente)',
+            query_c_level=f'(site:br.linkedin.com/in/ OR site:linkedin.com/in/) "{company_name}"{loc_suffix} (CEO OR CTO OR COO OR CFO OR Founder OR Sócio OR VP OR "Diretor Presidente")',
+            query_directors_heads=f'(site:br.linkedin.com/in/ OR site:linkedin.com/in/) "{company_name}"{loc_suffix} (Diretor OR Diretora OR "Head de" OR Gerente OR CHRO)',
         )
 
-    # 2. Public Google Search execution
+    query_news = f'"{company_name}"{loc_suffix} ("anuncia" OR "nomeia" OR "novo CEO" OR "novo diretor" OR "CHRO" OR "contrata")'
+
+    # 2. Public Google Search execution in parallel (C-Level, Directors, and Press/News)
     collected_results = []
     seen_urls = set()
 
-    # Search 1: C-Level & Executives
-    try:
-        res_c = execute_google_search(plan.query_c_level, num_results=request.max_results)
-        for item in res_c.get("organic_results", []):
-            u = item.get("url", "")
-            if "linkedin.com/in/" in u and u not in seen_urls:
-                seen_urls.add(u)
-                collected_results.append(item)
-    except Exception as e_c:
-        logger.warning("C-Level search failed: %s", e_c)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        f_c = executor.submit(execute_google_search, plan.query_c_level, request.max_results)
+        f_dh = executor.submit(execute_google_search, plan.query_directors_heads, request.max_results)
+        f_news = executor.submit(execute_google_search, query_news, 4)
 
-    # Search 2: Directors & Heads
-    if len(collected_results) < request.max_results:
         try:
-            res_dh = execute_google_search(plan.query_directors_heads, num_results=request.max_results)
+            res_c = f_c.result()
+            for item in res_c.get("organic_results", []):
+                u = item.get("url", "")
+                if "linkedin.com/in/" in u and u not in seen_urls:
+                    seen_urls.add(u)
+                    collected_results.append(item)
+        except Exception as e_c:
+            logger.warning("C-Level search failed: %s", e_c)
+
+        try:
+            res_dh = f_dh.result()
             for item in res_dh.get("organic_results", []):
                 u = item.get("url", "")
                 if "linkedin.com/in/" in u and u not in seen_urls:
@@ -406,9 +478,44 @@ def find_decision_makers_pipeline(
         except Exception as e_dh:
             logger.warning("Directors/Heads search failed: %s", e_dh)
 
+        try:
+            res_news = f_news.result()
+            for item in res_news.get("organic_results", []):
+                u = item.get("url", "")
+                if u not in seen_urls:
+                    seen_urls.add(u)
+                    collected_results.append(item)
+        except Exception as e_news:
+            logger.warning("News search failed: %s", e_news)
+
     # 3. AI synthesis of structured decision makers
     evidence_lines = []
-    for item in collected_results[: request.max_results + 5]:
+
+    qsa_text = ""
+    if not qsa_members:
+        try:
+            res_qsa = execute_google_search(f"{company_name} Brasil CNPJ", 4)
+            found_cnpjs = extract_cnpjs_from_search_results(res_qsa.get("organic_results", []))
+            for cand in found_cnpjs[:2]:
+                reg = consult_cnpj_public_api(cand)
+                if reg and reg.get("qsa"):
+                    qsa_members = reg.get("qsa")
+                    logger.info("Retrieved %d official QSA members from Receita Federal for '%s'", len(qsa_members), company_name)
+                    break
+        except Exception as e_qsa_lookup:
+            logger.debug("Automatic QSA lookup error: %s", e_qsa_lookup)
+
+    if qsa_members:
+        qsa_lines = [
+            f"- {q['nome']} | Cargo Oficial no QSA da Receita Federal: {q.get('cargo', 'Administrador')} | {q.get('tipo', 'Pessoa Física')}"
+            for q in qsa_members
+            if q.get("nome") and q.get("tipo") != "Pessoa Jurídica"
+        ]
+        if qsa_lines:
+            qsa_text = "\n=== QUADRO DE SÓCIOS E ADMINISTRADORES OFICIAL (RECEITA FEDERAL DO BRASIL) ===\n" + "\n".join(qsa_lines)
+            evidence_lines.append(qsa_text)
+
+    for item in collected_results[: request.max_results + 6]:
         evidence_lines.append(
             f"- Título: {item.get('title')}\n"
             f"  URL: {item.get('url')}\n"
@@ -422,7 +529,9 @@ def find_decision_makers_pipeline(
     Domínio/Website: {request.website_or_domain or 'N/A'}
     Departamentos de interesse: {', '.join(request.target_departments or [])}
 
-    === RESULTADOS DE PERFIS DO LINKEDIN ENCONTRADOS VIA GOOGLE SEARCH ===
+    {qsa_text}
+
+    === RESULTADOS DE PERFIS DO LINKEDIN E NOTÍCIAS DE NEGÓCIOS ENCONTRADOS ===
     {evidence_text}
 
     Analise cada resultado e construa a lista de decisores da empresa '{company_name}'.
@@ -443,7 +552,7 @@ def find_decision_makers_pipeline(
             company_name=company_name,
             total_encontrados=len(collected_results),
             decisores=[],
-            analise_estrategica_contato=f"Foram identificados {len(collected_results)} links brutos no LinkedIn. Recomenda-se abordagem direta aos perfis listados.",
+            analise_estrategica_contato=f"Foram identificados {len(collected_results)} resultados. Recomenda-se abordagem direta aos perfis listados.",
         )
 
     response.company_name = company_name
@@ -470,11 +579,15 @@ def enrich_full_company_pipeline(
 
     # 2. Decision makers discovery using enriched company signals
     dm_request = DecisionMakersRequest(
-        company_name=comp_res.dados_cadastrais.razao_social or comp_res.nome_pesquisado,
+        company_name=comp_res.dados_cadastrais.nome_fantasia or comp_res.nome_pesquisado,
         website_or_domain=comp_res.presenca_digital.website_oficial,
         max_results=10,
     )
-    dm_res = find_decision_makers_pipeline(dm_request, gemini_client=gemini)
+    dm_res = find_decision_makers_pipeline(
+        dm_request,
+        gemini_client=gemini,
+        qsa_members=comp_res.dados_cadastrais.qsa,
+    )
 
     elapsed = round(time.time() - start_time, 2)
     return FullCompanyEnrichmentResponse(
@@ -612,29 +725,40 @@ def enrich_unified_pipeline(
     start_time = time.time()
     gemini = gemini_client or GeminiClient()
 
-    # 1. Enrich company profile via Google Search + Official Website
+    # 1 & 2. Run Company Profile Enrichment and LinkedIn Company Page extraction concurrently
     comp_req = CompanyEnrichmentRequest(
         company_name=request.name,
         location_hint=request.location,
         deep_scrape_website=request.deep_scrape,
     )
-    comp_res = enrich_company_pipeline(comp_req, gemini_client=gemini)
 
-    # 2. Extract LinkedIn Company Page Profile (institutional data, tagline, employees, jobs)
-    linkedin_company = extract_linkedin_company_pipeline(
-        company_name=comp_res.dados_cadastrais.nome_fantasia or comp_res.nome_pesquisado,
-        known_linkedin_url=comp_res.presenca_digital.linkedin_url,
-        location_hint=request.location,
-        gemini_client=gemini,
-    )
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        f_comp = executor.submit(enrich_company_pipeline, comp_req, gemini)
+        f_li = executor.submit(
+            extract_linkedin_company_pipeline,
+            company_name=request.name,
+            known_linkedin_url=None,
+            location_hint=request.location,
+            gemini_client=gemini,
+        )
+        comp_res = f_comp.result()
+        linkedin_company = f_li.result()
 
-    # 3. Discover decision makers on LinkedIn using company signals
+    if comp_res.presenca_digital.linkedin_url and not linkedin_company.url:
+        linkedin_company.url = comp_res.presenca_digital.linkedin_url
+
+    # 3. Discover decision makers using commercial brand name and official QSA
+    target_company = request.name or comp_res.dados_cadastrais.nome_fantasia or comp_res.nome_pesquisado
     dm_req = DecisionMakersRequest(
-        company_name=comp_res.dados_cadastrais.razao_social or comp_res.nome_pesquisado,
+        company_name=target_company,
         website_or_domain=comp_res.presenca_digital.website_oficial,
         max_results=10,
     )
-    dm_res = find_decision_makers_pipeline(dm_req, gemini_client=gemini)
+    dm_res = find_decision_makers_pipeline(
+        request=dm_req,
+        gemini_client=gemini,
+        qsa_members=comp_res.dados_cadastrais.qsa,
+    )
 
     elapsed = round(time.time() - start_time, 2)
 

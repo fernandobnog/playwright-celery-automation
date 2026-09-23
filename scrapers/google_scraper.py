@@ -12,7 +12,7 @@ Performs resilient Google Search extractions simulating real human navigation:
 import logging
 import re
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote_plus, urljoin
+from urllib.parse import quote_plus, urljoin, parse_qs, urlparse, unquote
 
 import bs4
 import httpx
@@ -70,10 +70,91 @@ class GoogleSearchScraper(BasePlaywrightScraper):
 
         # 5. Extract all rich SERP elements
         parsed_data = self._parse_serp(soup, query=query, num_results=num_results)
+
+        # 6. Multi-Search Engine Fallback (DuckDuckGo) if Google triggers CAPTCHA or yields 0 results
+        if "google.com/sorry" in page.url or len(parsed_data.get("organic_results", [])) == 0:
+            logger.warning("Google search blocked by CAPTCHA/sorry or returned 0 results for '%s'. Falling back to DuckDuckGo...", query[:40])
+            ddg_data = self._search_duckduckgo_fallback(page, query=query, num_results=num_results)
+            if ddg_data and len(ddg_data.get("organic_results", [])) > 0:
+                parsed_data = ddg_data
+
         if screenshot_path:
             parsed_data["screenshot_path"] = screenshot_path
 
         return parsed_data
+
+    def _search_duckduckgo_fallback(self, page: Page, query: str, num_results: int) -> Dict[str, Any]:
+        """Fallback to DuckDuckGo SERP when Google is blocked by bot detection."""
+        try:
+            # DuckDuckGo handles queries better without complex boolean operators or excessive quotes
+            clean_query = re.sub(r'["()]+', ' ', query)
+            clean_query = re.sub(r'\bOR\b', ' ', clean_query)
+            clean_query = re.sub(r'\s+', ' ', clean_query).strip()
+
+            ddg_url = f"https://duckduckgo.com/?q={quote_plus(clean_query)}&ia=web"
+            logger.info("Executing DuckDuckGo fallback search: '%s' (cleaned: '%s')", query[:40], clean_query[:40])
+            page.goto(ddg_url, wait_until="domcontentloaded")
+            try:
+                page.wait_for_selector("a[data-testid='result-title-a'], article, .result", timeout=4000)
+            except Exception:
+                page.wait_for_timeout(2000)
+            human_scroll(page, steps=2, min_distance=200, max_distance=400)
+
+            soup = bs4.BeautifulSoup(page.content(), "html.parser")
+            organic_results: List[Dict[str, Any]] = []
+            seen_urls = set()
+
+            title_anchors = soup.select("a[data-testid='result-title-a'], h2 a, .result__title a")
+            for a_tag in title_anchors:
+                raw_href = a_tag.get("href", "")
+                if not raw_href or "duckduckgo.com/y.js" in raw_href:
+                    continue
+
+                if "uddg=" in raw_href:
+                    qs = parse_qs(urlparse(raw_href).query)
+                    target_url = unquote(qs.get("uddg", [raw_href])[0])
+                else:
+                    target_url = raw_href
+
+                if not target_url or target_url in seen_urls or "duckduckgo.com" in target_url:
+                    continue
+                seen_urls.add(target_url)
+
+                title = a_tag.get_text().strip()
+                if not title:
+                    continue
+
+                parent = a_tag.find_parent("article") or a_tag.find_parent("li") or a_tag.find_parent("div")
+                snippet = ""
+                if parent:
+                    snip_el = parent.select_one("div[data-result='snippet'], .result__snippet, [data-testid='result-snippet']")
+                    if snip_el:
+                        snippet = snip_el.get_text().strip()
+
+                organic_results.append({
+                    "position": len(organic_results) + 1,
+                    "title": title,
+                    "url": target_url,
+                    "display_url": target_url,
+                    "snippet": snippet,
+                    "date": None,
+                    "sitelinks": [],
+                })
+                if len(organic_results) >= num_results:
+                    break
+
+            logger.info("DuckDuckGo fallback retrieved %d results for '%s'", len(organic_results), clean_query[:40])
+            return {
+                "query": query,
+                "total_results": len(organic_results),
+                "organic_results": organic_results,
+                "people_also_ask": [],
+                "related_searches": [],
+                "ai_overview": None,
+            }
+        except Exception as e_ddg:
+            logger.warning("DuckDuckGo fallback search failed for '%s': %s", query[:40], e_ddg)
+            return {"query": query, "total_results": 0, "organic_results": []}
 
     def _dismiss_consent_dialog(self, page: Page):
         """Clicks 'Aceitar tudo' / 'Concordo' / 'Accept all' if presented."""

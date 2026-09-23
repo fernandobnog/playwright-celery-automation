@@ -384,10 +384,15 @@ class AIExtractor:
         include_images: bool = True,
         wait_for_selector: Optional[str] = None,
         timeout_seconds: int = 30,
+        max_length: Optional[int] = None,
+        engine: Optional[str] = None,
+        **kwargs,
     ) -> Dict[str, Any]:
         """
         Extracts and converts website content into AI-optimized Markdown.
         """
+        if engine:
+            mode = engine
         url = normalize_url(url)
         validate_url_for_ssrf(url)
         logger.info("Extracting AI content from URL: %s (mode=%s)", url, mode)
@@ -461,6 +466,9 @@ class AIExtractor:
                 f"---\n\n"
             )
             final_content = frontmatter + markdown_body
+
+        if max_length and len(final_content) > max_length:
+            final_content = final_content[:max_length]
 
         words = len(final_content.split())
         tokens = estimate_tokens(final_content)

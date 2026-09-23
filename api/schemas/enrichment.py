@@ -24,6 +24,7 @@ class CadastralData(BaseModel):
     situacao_cadastral: Optional[str] = Field(default=None, description="Situação cadastral (ex: Ativa, Baixada) se identificada")
     data_abertura: Optional[str] = Field(default=None, description="Ano ou data de fundação/abertura se mencionada")
     sede_localizacao: Optional[str] = Field(default=None, description="Cidade, Estado ou endereço da matriz")
+    qsa: List[Dict[str, Any]] = Field(default_factory=list, description="Quadro de Sócios e Administradores (QSA)")
 
 
 class DigitalPresence(BaseModel):
@@ -107,7 +108,7 @@ class DecisionMakerProfile(BaseModel):
         "Outro",
     ] = Field(description="Nível hierárquico na organização")
     departamento: str = Field(description="Área/Departamento (ex: Tecnologia, Vendas, Operações, Financeiro, Diretoria Geral)")
-    linkedin_url: str = Field(description="URL direta do perfil pessoal no LinkedIn")
+    linkedin_url: Optional[str] = Field(default=None, description="URL direta do perfil pessoal no LinkedIn (se identificada)")
     localizacao: Optional[str] = Field(default=None, description="Cidade ou região informada no perfil")
     vinculo_atual_confirmado: bool = Field(
         default=True,
