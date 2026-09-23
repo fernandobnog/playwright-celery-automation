@@ -16,7 +16,26 @@ Este servidor implementa a especificação oficial do **Model Context Protocol (
 
 ## ⚙️ Como Configurar nos Clientes de IA
 
-### 1. Claude Desktop
+### 1. Conexão Remota Nativa via URL (SSE / HTTP) — Recomendada para Cursor e Clientes MCP Remotos
+
+Se o seu cliente de IA suporta conexão MCP direta via URL (como o **Cursor**, **Antigravity** e extensões MCP remotas), você não precisa rodar nenhum script local nem abrir túnel SSH. Basta colar esta configuração:
+
+```json
+{
+  "mcpServers": {
+    "lead-enrichment": {
+      "url": "https://api.fernandonogueira.dev.br/mcp/sse",
+      "headers": {
+        "X-API-Key": "omniflow_232750db9cac2682c20ffadd0bce268f2d85764bc1149921"
+      }
+    }
+  }
+}
+```
+
+---
+
+### 2. Claude Desktop (via Stdio)
 
 No arquivo de configuração do Claude Desktop:
 - **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`

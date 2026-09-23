@@ -71,3 +71,42 @@ def test_mcp_process_message_ping_and_unknown():
 
     unknown_resp = process_message(json.dumps({"jsonrpc": "2.0", "id": 11, "method": "non_existent"}))
     assert unknown_resp["error"]["code"] == -32601
+
+
+def test_mcp_sse_and_messages_endpoints():
+    """Tests the remote SSE route presence and session posting flow."""
+    from fastapi.testclient import TestClient
+    from api.main import app
+    from api.routes.mcp_sse import active_sessions
+    from core.config import settings
+    import asyncio
+
+    client = TestClient(app, headers={"X-API-Key": settings.INTERNAL_API_KEY or "omniflow_232750db9cac2682c20ffadd0bce268f2d85764bc1149921"})
+
+    # 1. Test routes are registered in FastAPI Gateway OpenAPI schema
+    paths = list(app.openapi()["paths"].keys())
+    assert "/mcp/sse" in paths
+    assert "/mcp/messages" in paths
+
+    # 2. Test POST /mcp/messages without valid session -> 404
+    bad_resp = client.post("/mcp/messages?session_id=invalid-session", json={"jsonrpc": "2.0", "id": 1, "method": "ping"})
+    assert bad_resp.status_code == 404
+
+    # 3. Test POST /mcp/messages with active session -> 202 Accepted
+    test_session_id = "test-session-123"
+    test_queue = asyncio.Queue()
+    active_sessions[test_session_id] = test_queue
+
+    try:
+        ok_resp = client.post(
+            f"/mcp/messages?session_id={test_session_id}",
+            json={"jsonrpc": "2.0", "id": 99, "method": "ping"},
+        )
+        assert ok_resp.status_code == 202
+        assert not test_queue.empty()
+        queued_msg = test_queue.get_nowait()
+        assert queued_msg["id"] == 99
+    finally:
+        active_sessions.pop(test_session_id, None)
+
+

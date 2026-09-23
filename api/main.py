@@ -17,6 +17,7 @@ from api.routes import (
     flows_router,
     google_search_router,
     leads_router,
+    mcp_router,
     proposals_router,
     sync_router,
     tasks_router,
@@ -132,6 +133,10 @@ app.include_router(
 )
 app.include_router(
     enrichment_router,
+    dependencies=[Depends(verify_internal_api_key)],
+)
+app.include_router(
+    mcp_router,
     dependencies=[Depends(verify_internal_api_key)],
 )
 

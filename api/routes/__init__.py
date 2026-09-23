@@ -9,6 +9,7 @@ from api.routes.proposals import router as proposals_router
 from api.routes.sync import router as sync_router
 from api.routes.editorial import router as editorial_router
 from api.routes.enrichment import router as enrichment_router
+from api.routes.mcp_sse import router as mcp_router
 
 __all__ = [
     "flows_router",
@@ -21,4 +22,5 @@ __all__ = [
     "sync_router",
     "editorial_router",
     "enrichment_router",
+    "mcp_router",
 ]
