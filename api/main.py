@@ -116,10 +116,12 @@ app.include_router(
 app.include_router(
     leads_router,
     prefix="/api/v1",
+    dependencies=[Depends(verify_internal_api_key)],
 )
 app.include_router(
     editorial_router,
     prefix="/api/v1",
+    dependencies=[Depends(verify_internal_api_key)],
 )
 app.include_router(
     proposals_router,
@@ -159,7 +161,7 @@ def root(request: Request):
     }
 
 
-@app.get("/health", tags=["Health"])
+@app.get("/health", tags=["Health"], dependencies=[Depends(verify_internal_api_key)])
 def health():
     """Health check validating Redis connection and Celery worker availability."""
     redis_healthy = False
