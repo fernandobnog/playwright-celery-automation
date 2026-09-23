@@ -587,12 +587,14 @@ def task_publish_approved_editorial(token_payload: Dict[str, Any]) -> Dict[str, 
         skip_linkedin=skip_linkedin,
     )
 
-    if result.get("publication_results", {}).get("site", {}).get("status") == "ERROR":
+    pulse_status = result.get("publication_results", {}).get("linkedin_pulse", {}).get("status")
+    site_status = result.get("publication_results", {}).get("site", {}).get("status")
+    if site_status == "ERROR" or pulse_status == "ERROR":
         try:
             from redis import Redis
             r = Redis.from_url(settings.REDIS_URL)
             r.delete(f"editorial:publish_locked:{doc_id}")
-            logger.info("Cleared Redis lock for doc_id %s due to site publication error.", doc_id)
+            logger.info("Cleared Redis lock for doc_id %s due to publication error (site=%s, pulse=%s).", doc_id, site_status, pulse_status)
         except Exception as e_clr:
             logger.debug("Could not clear Redis publish lock: %s", e_clr)
 

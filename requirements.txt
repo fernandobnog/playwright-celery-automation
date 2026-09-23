@@ -22,3 +22,4 @@ psycopg2-binary>=2.9.9
 gspread>=6.1.0
 pillow>=10.0.0
 markdown>=3.6.0
+dnspython>=2.6.0
