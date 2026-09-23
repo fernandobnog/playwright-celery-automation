@@ -45,6 +45,7 @@ from integrations.receita import (
     extract_cnpjs_from_search_results,
     format_cnpj,
 )
+from integrations.email_verifier import find_valid_executive_email
 from scrapers.ai_extractor import ai_extractor
 from scrapers.google_scraper import GoogleSearchScraper
 
@@ -609,7 +610,10 @@ def find_decision_makers_pipeline(
     corp_domain = None
     if request.website_or_domain:
         try:
-            d = urlparse(request.website_or_domain).netloc.lower()
+            raw_url = request.website_or_domain
+            if "://" not in raw_url:
+                raw_url = "https://" + raw_url
+            d = urlparse(raw_url).netloc.lower()
             if d.startswith("www."):
                 d = d[4:]
             corp_domain = d
@@ -624,8 +628,35 @@ def find_decision_makers_pipeline(
                 corp_domain = dom
                 break
 
+    # Determine fallback domains
+    clean_company_slug = re.sub(r'[^a-z0-9]', '', unicodedata.normalize('NFKD', company_name).encode('ascii', 'ignore').decode('utf-8').lower())
+    alt_domain = None
+    if not corp_domain and clean_company_slug:
+        corp_domain = f"{clean_company_slug}.com.br"
+        alt_domain = f"{clean_company_slug}.com"
+    elif corp_domain and clean_company_slug:
+        if corp_domain.endswith(".com.br"):
+            alt_domain = f"{clean_company_slug}.com"
+        elif corp_domain.endswith(".com"):
+            alt_domain = f"{clean_company_slug}.com.br"
+
+    verified_count = 0
     for dm in response.decisores:
-        if not dm.email_provavel and corp_domain:
+        if corp_domain:
+            # For top 3 priority executives (C-Level / Diretoria / Head), run active SMTP verification
+            if verified_count < 3 and dm.nivel_hierarquico in ("C-Level / Sócio-Fundador", "Diretoria", "Gerência / Head"):
+                try:
+                    ver_res = find_valid_executive_email(dm.nome, corp_domain, alternate_domain=alt_domain)
+                    if ver_res and ver_res.get("email"):
+                        dm.email_provavel = ver_res.get("email")
+                        dm.padrao_email = ver_res.get("padrao_identificado", f"{{nome}}.{{sobrenome}}@{corp_domain}")
+                        dm.status_email = ver_res.get("status", "NAO_VERIFICADO")
+                        verified_count += 1
+                        continue
+                except Exception as e_ver:
+                    logger.debug("Active SMTP check skipped for %s: %s", dm.nome, e_ver)
+
+            # Heuristic calculation for remaining profiles
             clean_name = unicodedata.normalize('NFKD', dm.nome).encode('ascii', 'ignore').decode('utf-8').lower()
             parts = [p for p in re.sub(r'[^a-z\s]', '', clean_name).split() if len(p) > 1]
             if len(parts) >= 2:
@@ -633,9 +664,11 @@ def find_decision_makers_pipeline(
                 last = parts[-1]
                 dm.email_provavel = f"{first}.{last}@{corp_domain}"
                 dm.padrao_email = f"{{nome}}.{{sobrenome}}@{corp_domain}"
+                dm.status_email = "HEURISTICA_PADRAO"
             elif len(parts) == 1:
                 dm.email_provavel = f"{parts[0]}@{corp_domain}"
                 dm.padrao_email = f"{{nome}}@{corp_domain}"
+                dm.status_email = "HEURISTICA_PADRAO"
 
     response.company_name = company_name
     response.total_encontrados = len(response.decisores)

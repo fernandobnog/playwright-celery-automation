@@ -128,6 +128,24 @@ TOOLS = [
             "required": ["name"],
         },
     },
+    {
+        "name": "verify_email",
+        "description": (
+            "Verifica ativamente a existência e entregabilidade de uma caixa postal corporativa "
+            "através de um handshake SMTP direto (zero-bounce: EHLO -> MAIL FROM -> RCPT TO -> QUIT). "
+            "Confirma se o e-mail do executivo realmente existe e recebe mensagens sem enviar e-mails de verdade."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "email": {
+                    "type": "string",
+                    "description": "Endereço de e-mail corporativo a validar (ex: 'alessio.mainardi@zucchetti.com')",
+                },
+            },
+            "required": ["email"],
+        },
+    },
 ]
 
 
@@ -248,6 +266,15 @@ def handle_tools_call(req_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 "location": args.get("location"),
             }
             res = _http_request("/api/v1/enrich/linkedin/company", method="POST", data=payload, timeout=120)
+
+        elif tool_name == "verify_email":
+            email = args.get("email")
+            if not email:
+                raise ValueError("Parâmetro 'email' é obrigatório.")
+            payload = {
+                "email": email,
+            }
+            res = _http_request("/api/v1/enrich/verify-email", method="POST", data=payload, timeout=30)
 
         else:
             return {

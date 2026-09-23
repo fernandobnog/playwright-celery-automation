@@ -13,11 +13,14 @@ from api.schemas.enrichment import (
     CompanyEnrichmentResponse,
     DecisionMakersRequest,
     DecisionMakersResponse,
+    EmailVerifyRequest,
+    EmailVerifyResponse,
     FullCompanyEnrichmentResponse,
     LinkedInCompanyProfile,
     QuickEnrichRequest,
     UnifiedEnrichmentResponse,
 )
+from integrations.email_verifier import verify_email_smtp
 from flows.flow_company_enrichment import (
     enrich_company_pipeline,
     enrich_full_company_pipeline,
@@ -229,4 +232,28 @@ def extract_linkedin_company_async(payload: QuickEnrichRequest):
     except Exception as e:
         logger.error("Failed to dispatch async LinkedIn company task: %s", e)
         raise HTTPException(status_code=500, detail=f"Erro ao enfileirar extração do LinkedIn: {str(e)}")
+
+
+@router.post("/verify-email", response_model=EmailVerifyResponse)
+def verify_email_post(payload: EmailVerifyRequest):
+    """
+    Verificação ativa de entregabilidade de e-mail por handshake SMTP direto (zero-bounce).
+    Testa se a caixa postal existe sem disparar mensagens de e-mail.
+    """
+    try:
+        res = verify_email_smtp(payload.email)
+        return EmailVerifyResponse(**res)
+    except Exception as e:
+        logger.error("Failed to verify email %s: %s", payload.email, e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Erro ao verificar e-mail via SMTP: {str(e)}")
+
+
+@router.get("/verify-email", response_model=EmailVerifyResponse)
+def verify_email_get(email: str = Query(..., description="Endereço de e-mail corporativo a verificar")):
+    """
+    Versão GET para verificação ativa de e-mail por handshake SMTP.
+    """
+    payload = EmailVerifyRequest(email=email)
+    return verify_email_post(payload)
+
 

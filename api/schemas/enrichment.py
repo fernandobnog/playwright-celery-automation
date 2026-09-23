@@ -111,6 +111,7 @@ class DecisionMakerProfile(BaseModel):
     linkedin_url: Optional[str] = Field(default=None, description="URL direta do perfil pessoal no LinkedIn (se identificada)")
     email_provavel: Optional[str] = Field(default=None, description="E-mail corporativo provável baseado no padrão da empresa")
     padrao_email: Optional[str] = Field(default=None, description="Formato/padrão de e-mail corporativo identificado na organização")
+    status_email: Optional[str] = Field(default=None, description="Status de validação SMTP (ex: VALIDADO_SMTP, CATCH_ALL, INVALIDO, NAO_VERIFICADO)")
     telefone_contato: Optional[str] = Field(default=None, description="Telefone institucional ou direto para contato")
     localizacao: Optional[str] = Field(default=None, description="Cidade ou região informada no perfil")
     vinculo_atual_confirmado: bool = Field(
@@ -267,3 +268,24 @@ class UnifiedEnrichmentResponse(BaseModel):
     linkedin: LinkedInEnrichmentData
     inteligencia_comercial: CommercialStrategyData
     execution_time_seconds: Optional[float] = None
+
+
+# ==============================================================================
+# 4. Schemas for Native SMTP Email Deliverability Verification
+# ==============================================================================
+class EmailVerifyRequest(BaseModel):
+    """Requisição de verificação ativa de e-mail por handshake SMTP (zero-bounce)."""
+    email: str = Field(..., description="Endereço de e-mail corporativo a ser testado", examples=["alessio.mainardi@zucchetti.com"])
+
+
+class EmailVerifyResponse(BaseModel):
+    """Resposta da verificação ativa de e-mail por SMTP."""
+    email: str
+    status: str = Field(description="VALIDADO_SMTP, CATCH_ALL, INVALIDO, SEM_MX, SINTAXE_INVALIDA ou ERRO_CONEXAO")
+    valido: Optional[bool] = Field(default=None, description="True se a entrega for confirmada ou provável; False se rejeitado; None se inconclusivo")
+    mx_host: Optional[str] = Field(default=None, description="Servidor de correio (MX) consultado")
+    smtp_code: Optional[int] = Field(default=None, description="Código de resposta SMTP (ex: 250, 550)")
+    is_catch_all: bool = Field(default=False, description="Indica se o domínio aceita qualquer endereço arbitrário")
+    detalhe: str = Field(description="Explicação técnica do resultado")
+    execution_time_seconds: Optional[float] = None
+
