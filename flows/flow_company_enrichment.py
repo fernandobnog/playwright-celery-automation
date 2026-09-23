@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 from api.schemas.enrichment import (
     CadastralData,
     CommercialIntelligence,
+    CommercialStrategyData,
     CompanyEnrichmentRequest,
     CompanyEnrichmentResponse,
     DecisionMakerProfile,
@@ -24,8 +25,13 @@ from api.schemas.enrichment import (
     DecisionMakersResponse,
     DigitalPresence,
     FullCompanyEnrichmentResponse,
+    GoogleEnrichmentData,
+    LinkedInCompanyProfile,
+    LinkedInEnrichmentData,
     MarketProfile,
+    QuickEnrichRequest,
     SearchRefinementPlan,
+    UnifiedEnrichmentResponse,
 )
 from core.celery_app import celery_app
 from integrations.gemini import GeminiClient
@@ -68,6 +74,26 @@ Diretrizes obrigatórias:
    - ALTA: Site oficial + CNPJ ou dados cadastrais confirmados.
    - MEDIA: Site oficial identificado com clareza, mas dados cadastrais incompletos.
    - BAIXA: Empresa ambígua ou poucos dados encontrados.
+"""
+
+LINKEDIN_COMPANY_SYSTEM_INSTRUCTION = """
+Você é um analista sênior de inteligência corporativa e especialista em OSINT do LinkedIn.
+Sua missão é extrair e estruturar o perfil institucional da empresa no LinkedIn (Company Page) a partir dos títulos, snippets e URLs indexadas pelo Google.
+
+Diretrizes obrigatórias:
+1. 'nome': O nome institucional da empresa como consta no título ou cabeçalho do LinkedIn.
+2. 'url': A URL corporativa oficial da Company Page no LinkedIn (ex: https://br.linkedin.com/company/matera). Apenas páginas de empresa (/company/), ignore perfis individuais (/in/).
+3. 'tagline': O slogan, tagline ou frase de impacto da empresa no LinkedIn.
+4. 'sobre': Resumo institucional do que a empresa faz (seção 'Sobre' ou 'About').
+5. 'setor': Setor de atuação segundo a taxonomia do LinkedIn (ex: Serviços e consultoria de TI, Software, Bancos, etc.).
+6. 'faixa_funcionarios': Porte ou faixa de colaboradores no LinkedIn (ex: '501-1.000 funcionários', '1.001-5.000 funcionários', etc.).
+7. 'total_seguidores': Número de seguidores no LinkedIn se presente nos snippets.
+8. 'sede': Cidade/Estado da sede registrada no perfil.
+9. 'ano_fundacao': Ano de fundação se mencionado.
+10. 'tipo_empresa': Tipo (ex: 'Empresa privada', 'Sociedade Anônima', 'Capital Aberto').
+11. 'especialidades': Lista de competências e áreas de especialidade mencionadas.
+12. 'vagas_url': Link para a aba de empregos/vagas da empresa no LinkedIn (/jobs), se houver menção.
+13. Não invente dados: deixe campos nulos se não houver evidência factual nos snippets.
 """
 
 
@@ -450,4 +476,183 @@ def task_enrich_full_company(payload_dict: dict) -> dict:
     """
     req = CompanyEnrichmentRequest(**payload_dict)
     response = enrich_full_company_pipeline(req)
+    return response.model_dump()
+
+
+def extract_linkedin_company_pipeline(
+    company_name: str,
+    known_linkedin_url: Optional[str] = None,
+    location_hint: Optional[str] = None,
+    gemini_client: Optional[GeminiClient] = None,
+    scraper: Optional[GoogleSearchScraper] = None,
+) -> LinkedInCompanyProfile:
+    """
+    Discovers and extracts structured corporate data from the public LinkedIn Company Page
+    via Google indexing and snippets, without triggering any LinkedIn authwall or bot bans.
+    """
+    gemini = gemini_client or GeminiClient()
+    company_clean = company_name.strip()
+
+    loc_str = f" {location_hint}" if location_hint else ""
+    query = f'site:linkedin.com/company/ "{company_clean}"{loc_str}'
+
+    search_items = []
+
+    def _execute_search(s: GoogleSearchScraper):
+        nonlocal search_items
+        try:
+            res = s.search(query, num_results=4)
+            for item in res.get("organic_results", []):
+                u = item.get("url", "")
+                if "linkedin.com/company" in u:
+                    search_items.append(item)
+        except Exception as e:
+            logger.warning("LinkedIn company search failed for '%s': %s", company_clean, e)
+
+    if scraper:
+        _execute_search(scraper)
+    else:
+        try:
+            with GoogleSearchScraper() as sc:
+                _execute_search(sc)
+        except Exception as e_sc:
+            logger.warning("Scraper session error for LinkedIn company: %s", e_sc)
+
+    if not search_items:
+        return LinkedInCompanyProfile(
+            nome=company_clean,
+            url=known_linkedin_url,
+        )
+
+    evidence_lines = []
+    for item in search_items:
+        evidence_lines.append(
+            f"- Título: {item.get('title')} | URL: {item.get('url')}\n"
+            f"  Snippet: {item.get('snippet')}"
+        )
+    evidence_text = "\n".join(evidence_lines)
+
+    prompt = f"""
+    EMPRESA PESQUISADA: "{company_clean}"
+    URL PRÉVIA CONHECIDA: {known_linkedin_url or 'N/A'}
+    LOCALIZAÇÃO / CONTEXTO: {location_hint or 'N/A'}
+
+    === RESULTADOS INDEXADOS DO LINKEDIN NO GOOGLE (COMPANY PAGE) ===
+    {evidence_text}
+
+    Extraia com máxima fidelidade factual as informações da Company Page da empresa no LinkedIn para o modelo estruturado.
+    """
+
+    try:
+        profile: LinkedInCompanyProfile = gemini.generate_structured(
+            prompt=prompt,
+            system_instruction=LINKEDIN_COMPANY_SYSTEM_INSTRUCTION,
+            response_model=LinkedInCompanyProfile,
+            model_name="gemini-2.5-flash",
+        )
+        if known_linkedin_url and not profile.url:
+            profile.url = known_linkedin_url
+        if not profile.nome:
+            profile.nome = company_clean
+        return profile
+    except Exception as e:
+        logger.warning("Failed to synthesize LinkedIn company profile for '%s': %s", company_clean, e)
+        first_url = search_items[0].get("url") if search_items else known_linkedin_url
+        return LinkedInCompanyProfile(
+            nome=company_clean,
+            url=first_url or known_linkedin_url,
+        )
+
+
+@celery_app.task(name="flows.flow_company_enrichment.task_extract_linkedin_company", queue="flows")
+def task_extract_linkedin_company(payload_dict: dict) -> dict:
+    """
+    Celery task for LinkedIn Company Page extraction.
+    """
+    name = payload_dict.get("name") or payload_dict.get("company_name", "")
+    known_url = payload_dict.get("url") or payload_dict.get("linkedin_url")
+    location = payload_dict.get("location") or payload_dict.get("location_hint")
+    profile = extract_linkedin_company_pipeline(name, known_linkedin_url=known_url, location_hint=location)
+    return profile.model_dump()
+
+
+def enrich_unified_pipeline(
+    request: QuickEnrichRequest,
+    gemini_client: Optional[GeminiClient] = None,
+) -> UnifiedEnrichmentResponse:
+    """
+    Executes a streamlined Google + LinkedIn company enrichment returning a clean consolidated profile.
+    Extracts both company institutional data and key decision makers on LinkedIn.
+    """
+    start_time = time.time()
+    gemini = gemini_client or GeminiClient()
+
+    # 1. Enrich company profile via Google Search + Official Website
+    comp_req = CompanyEnrichmentRequest(
+        company_name=request.name,
+        location_hint=request.location,
+        deep_scrape_website=request.deep_scrape,
+    )
+    comp_res = enrich_company_pipeline(comp_req, gemini_client=gemini)
+
+    # 2. Extract LinkedIn Company Page Profile (institutional data, tagline, employees, jobs)
+    linkedin_company = extract_linkedin_company_pipeline(
+        company_name=comp_res.dados_cadastrais.nome_fantasia or comp_res.nome_pesquisado,
+        known_linkedin_url=comp_res.presenca_digital.linkedin_url,
+        location_hint=request.location,
+        gemini_client=gemini,
+    )
+
+    # 3. Discover decision makers on LinkedIn using company signals
+    dm_req = DecisionMakersRequest(
+        company_name=comp_res.dados_cadastrais.razao_social or comp_res.nome_pesquisado,
+        website_or_domain=comp_res.presenca_digital.website_oficial,
+        max_results=10,
+    )
+    dm_res = find_decision_makers_pipeline(dm_req, gemini_client=gemini)
+
+    elapsed = round(time.time() - start_time, 2)
+
+    return UnifiedEnrichmentResponse(
+        status="SUCCESS",
+        nome_pesquisado=request.name,
+        google=GoogleEnrichmentData(
+            razao_social=comp_res.dados_cadastrais.razao_social,
+            nome_fantasia=comp_res.dados_cadastrais.nome_fantasia,
+            cnpj=comp_res.dados_cadastrais.cnpj,
+            situacao_cadastral=comp_res.dados_cadastrais.situacao_cadastral,
+            sede=comp_res.dados_cadastrais.sede_localizacao,
+            website_oficial=comp_res.presenca_digital.website_oficial,
+            telefones=comp_res.presenca_digital.telefones,
+            emails=comp_res.presenca_digital.emails,
+            setor=comp_res.perfil_mercado.setor_atuacao,
+            nicho=comp_res.perfil_mercado.subsetor_nicho,
+            porte_estimado=comp_res.perfil_mercado.porte_estimado,
+            o_que_faz=comp_res.perfil_mercado.descricao_negocio,
+            produtos_servicos=comp_res.perfil_mercado.principais_produtos_ou_servicos,
+            fontes_google=comp_res.inteligencia_comercial.fontes_consultadas,
+        ),
+        linkedin=LinkedInEnrichmentData(
+            company_url=linkedin_company.url or comp_res.presenca_digital.linkedin_url,
+            empresa=linkedin_company,
+            total_decisores_encontrados=dm_res.total_encontrados,
+            decisores=dm_res.decisores,
+        ),
+        inteligencia_comercial=CommercialStrategyData(
+            dor_de_mercado_resolvida=comp_res.inteligencia_comercial.dor_de_mercado_resolvida,
+            sugestao_pitch_vendas=comp_res.inteligencia_comercial.sugestao_pitch_vendas,
+            melhor_ponto_de_contato=dm_res.analise_estrategica_contato,
+            nivel_confianca=comp_res.inteligencia_comercial.nivel_confianca,
+        ),
+        execution_time_seconds=elapsed,
+    )
+
+
+@celery_app.task(name="flows.flow_company_enrichment.task_enrich_unified", queue="flows")
+def task_enrich_unified(payload_dict: dict) -> dict:
+    """
+    Celery task for unified Google + LinkedIn company enrichment.
+    """
+    req = QuickEnrichRequest(**payload_dict)
+    response = enrich_unified_pipeline(req)
     return response.model_dump()

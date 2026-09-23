@@ -14,18 +14,59 @@ from api.schemas.enrichment import (
     DecisionMakersRequest,
     DecisionMakersResponse,
     FullCompanyEnrichmentResponse,
+    LinkedInCompanyProfile,
+    QuickEnrichRequest,
+    UnifiedEnrichmentResponse,
 )
 from flows.flow_company_enrichment import (
     enrich_company_pipeline,
     enrich_full_company_pipeline,
+    enrich_unified_pipeline,
+    extract_linkedin_company_pipeline,
     find_decision_makers_pipeline,
     task_enrich_company,
+    task_enrich_unified,
+    task_extract_linkedin_company,
     task_find_decision_makers,
 )
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/enrich", tags=["Lead Enrichment (AI + Search)"])
+
+
+@router.post("", response_model=UnifiedEnrichmentResponse)
+@router.post("/", response_model=UnifiedEnrichmentResponse)
+def enrich_unified_post(payload: QuickEnrichRequest):
+    """
+    Endpoint principal: Envia apenas o nome da empresa e retorna os dados consolidados
+    do Google (cadastral, site, o que faz) e do LinkedIn (página da empresa e decisores/gestores).
+    """
+    try:
+        result = enrich_unified_pipeline(payload)
+        return result
+    except Exception as e:
+        logger.error("Failed to execute unified enrichment for '%s': %s", payload.name, e)
+        raise HTTPException(status_code=500, detail=f"Erro ao enriquecer empresa via Google e LinkedIn: {str(e)}")
+
+
+@router.get("", response_model=UnifiedEnrichmentResponse)
+@router.get("/", response_model=UnifiedEnrichmentResponse)
+def enrich_unified_get(
+    name: str = Query(..., min_length=1, max_length=200, description="Nome da empresa a enriquecer"),
+    location: Optional[str] = Query(None, description="Cidade ou Estado para desambiguação"),
+    deep_scrape: bool = Query(True, description="Análise profunda do site oficial"),
+):
+    """
+    Versão GET do enriquecimento unificado (Google + LinkedIn) via query string.
+    Exemplo: /api/v1/enrich?name=Matera&location=Campinas
+    """
+    payload = QuickEnrichRequest(
+        name=name,
+        location=location,
+        deep_scrape=deep_scrape,
+    )
+    return enrich_unified_post(payload)
 
 
 @router.post("/company", response_model=CompanyEnrichmentResponse)
@@ -141,3 +182,51 @@ def find_decision_makers_async(payload: DecisionMakersRequest):
     except Exception as e:
         logger.error("Failed to dispatch async decision makers task: %s", e)
         raise HTTPException(status_code=500, detail=f"Erro ao enfileirar busca de decisores: {str(e)}")
+
+
+@router.post("/linkedin/company", response_model=LinkedInCompanyProfile)
+def extract_linkedin_company_post(payload: QuickEnrichRequest):
+    """
+    Retorna exclusivamente o perfil institucional e corporativo da empresa no LinkedIn (Company Page).
+    """
+    try:
+        result = extract_linkedin_company_pipeline(
+            company_name=payload.name,
+            location_hint=payload.location,
+        )
+        return result
+    except Exception as e:
+        logger.error("Failed to extract LinkedIn company profile for '%s': %s", payload.name, e)
+        raise HTTPException(status_code=500, detail=f"Erro ao extrair perfil corporativo do LinkedIn: {str(e)}")
+
+
+@router.get("/linkedin/company", response_model=LinkedInCompanyProfile)
+def extract_linkedin_company_get(
+    name: str = Query(..., min_length=1, max_length=200, description="Nome da empresa"),
+    location: Optional[str] = Query(None, description="Localização para desambiguação"),
+):
+    """
+    Versão GET para extração do perfil corporativo da empresa no LinkedIn via query string.
+    Exemplo: /api/v1/enrich/linkedin/company?name=Matera
+    """
+    payload = QuickEnrichRequest(name=name, location=location)
+    return extract_linkedin_company_post(payload)
+
+
+@router.post("/linkedin/company/async")
+def extract_linkedin_company_async(payload: QuickEnrichRequest):
+    """
+    Enfileira a extração do perfil corporativo do LinkedIn na fila Celery assíncrona.
+    """
+    try:
+        task = task_extract_linkedin_company.apply_async(args=[payload.model_dump()])
+        return {
+            "status": "QUEUED",
+            "task_id": task.id,
+            "company_name": payload.name,
+            "message": "Extração de perfil corporativo do LinkedIn enviada para a fila Celery.",
+        }
+    except Exception as e:
+        logger.error("Failed to dispatch async LinkedIn company task: %s", e)
+        raise HTTPException(status_code=500, detail=f"Erro ao enfileirar extração do LinkedIn: {str(e)}")
+

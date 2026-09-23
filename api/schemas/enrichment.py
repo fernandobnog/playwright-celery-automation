@@ -4,8 +4,8 @@ Defines strict schemas for search refinement, cadastral data, digital presence,
 market positioning, and commercial intelligence.
 """
 
-from typing import Dict, List, Literal, Optional
-from pydantic import BaseModel, Field
+from typing import Any, Dict, List, Literal, Optional
+from pydantic import BaseModel, Field, model_validator
 
 
 class SearchRefinementPlan(BaseModel):
@@ -163,4 +163,103 @@ class FullCompanyEnrichmentResponse(BaseModel):
     status: str = Field(default="SUCCESS")
     empresa: CompanyEnrichmentResponse
     decisores: DecisionMakersResponse
+    execution_time_seconds: Optional[float] = None
+
+
+# ==============================================================================
+# 3. Schemas for Single-Call Unified Enrichment (Google + LinkedIn)
+# ==============================================================================
+class QuickEnrichRequest(BaseModel):
+    """Requisição simplificada para enriquecimento completo (Google + LinkedIn)."""
+    name: str = Field(
+        ...,
+        min_length=1,
+        max_length=200,
+        description="Nome da empresa a enriquecer (ex: Matera, Nubank, Totvs)",
+        examples=["Matera", "Nubank", "Kavak"],
+    )
+    location: Optional[str] = Field(
+        default=None,
+        description="Cidade ou Estado para auxiliar na desambiguação",
+        examples=["Campinas SP", "São Paulo"],
+    )
+    deep_scrape: bool = Field(
+        default=True,
+        description="Se true, analisa o site oficial em profundidade",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_name_aliases(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "name" not in data:
+                for alt in ["company_name", "company", "empresa", "nome"]:
+                    if alt in data and data[alt]:
+                        data["name"] = data[alt]
+                        break
+            if "location" not in data:
+                for alt in ["location_hint", "cidade", "estado"]:
+                    if alt in data and data[alt]:
+                        data["location"] = data[alt]
+                        break
+        return data
+
+
+class GoogleEnrichmentData(BaseModel):
+    """Dados cadastrais e operacionais extraídos via Google Search e site oficial."""
+    razao_social: Optional[str] = None
+    nome_fantasia: str
+    cnpj: Optional[str] = None
+    situacao_cadastral: Optional[str] = None
+    sede: Optional[str] = None
+    website_oficial: Optional[str] = None
+    telefones: List[str] = Field(default_factory=list)
+    emails: List[str] = Field(default_factory=list)
+    setor: str
+    nicho: Optional[str] = None
+    porte_estimado: str
+    o_que_faz: str
+    produtos_servicos: List[str] = Field(default_factory=list)
+    fontes_google: List[str] = Field(default_factory=list)
+
+
+class LinkedInCompanyProfile(BaseModel):
+    """Perfil institucional e corporativo da empresa no LinkedIn (Company Page)."""
+    nome: Optional[str] = Field(None, description="Nome da empresa conforme exibido no LinkedIn")
+    url: Optional[str] = Field(None, description="URL oficial da Company Page no LinkedIn")
+    tagline: Optional[str] = Field(None, description="Slogan / Headline da empresa no LinkedIn")
+    sobre: Optional[str] = Field(None, description="Descrição institucional (seção Sobre) no LinkedIn")
+    setor: Optional[str] = Field(None, description="Setor / Indústria oficial segundo taxonomia do LinkedIn")
+    faixa_funcionarios: Optional[str] = Field(None, description="Faixa de colaboradores cadastrada no LinkedIn (ex: 501-1.000 funcionários)")
+    total_seguidores: Optional[str] = Field(None, description="Quantidade aproximada de seguidores no LinkedIn")
+    sede: Optional[str] = Field(None, description="Localização da sede segundo o LinkedIn")
+    ano_fundacao: Optional[str] = Field(None, description="Ano de fundação registrado no LinkedIn")
+    tipo_empresa: Optional[str] = Field(None, description="Tipo de empresa (ex: Empresa privada, Sociedade Anônima)")
+    especialidades: List[str] = Field(default_factory=list, description="Lista de especialidades cadastradas no perfil")
+    vagas_url: Optional[str] = Field(None, description="URL da página de vagas no LinkedIn (/jobs)")
+
+
+class LinkedInEnrichmentData(BaseModel):
+    """Dados institucionais e decisores descobertos no LinkedIn."""
+    company_url: Optional[str] = None
+    empresa: Optional[LinkedInCompanyProfile] = None
+    total_decisores_encontrados: int = 0
+    decisores: List[DecisionMakerProfile] = Field(default_factory=list)
+
+
+class CommercialStrategyData(BaseModel):
+    """Inteligência comercial e gancho de abordagem."""
+    dor_de_mercado_resolvida: Optional[str] = None
+    sugestao_pitch_vendas: str
+    melhor_ponto_de_contato: str
+    nivel_confianca: str
+
+
+class UnifiedEnrichmentResponse(BaseModel):
+    """Resposta consolidada de enriquecimento com Google e LinkedIn."""
+    status: str = Field(default="SUCCESS")
+    nome_pesquisado: str
+    google: GoogleEnrichmentData
+    linkedin: LinkedInEnrichmentData
+    inteligencia_comercial: CommercialStrategyData
     execution_time_seconds: Optional[float] = None

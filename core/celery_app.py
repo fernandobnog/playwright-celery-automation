@@ -65,6 +65,8 @@ celery_app.conf.update(
         "flows.flow_company_enrichment.task_enrich_company": {"queue": "flows"},
         "flows.flow_company_enrichment.task_find_decision_makers": {"queue": "flows"},
         "flows.flow_company_enrichment.task_enrich_full_company": {"queue": "flows"},
+        "flows.flow_company_enrichment.task_enrich_unified": {"queue": "flows"},
+        "flows.flow_company_enrichment.task_extract_linkedin_company": {"queue": "flows"},
     },
 
     # Beat Periodic Schedules (Automations replacing n8n scheduled triggers)
