@@ -13,6 +13,7 @@ from redis import Redis
 from api.routes import (
     ai_extract_router,
     editorial_router,
+    enrichment_router,
     flows_router,
     google_search_router,
     leads_router,
@@ -127,6 +128,10 @@ app.include_router(
 app.include_router(
     sync_router,
     prefix="/api/v1",
+    dependencies=[Depends(verify_internal_api_key)],
+)
+app.include_router(
+    enrichment_router,
     dependencies=[Depends(verify_internal_api_key)],
 )
 

@@ -567,3 +567,4 @@ class AIExtractor:
 
 
 extractor = AIExtractor()
+ai_extractor = extractor

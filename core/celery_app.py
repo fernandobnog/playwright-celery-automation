@@ -62,6 +62,7 @@ celery_app.conf.update(
         "flows.flow_proposal_generator.task_generate_and_send_proposal": {"queue": "flows"},
         "flows.flow_content_deep_writer.task_deep_content_generation": {"queue": "flows"},
         "flows.flow_content_publisher.task_publish_approved_editorial": {"queue": "flows"},
+        "flows.flow_company_enrichment.task_enrich_company": {"queue": "flows"},
     },
 
     # Beat Periodic Schedules (Automations replacing n8n scheduled triggers)
@@ -119,6 +120,7 @@ celery_app.conf.update(
         "flows.flow_proposal_generator",
         "flows.flow_content_deep_writer",
         "flows.flow_content_publisher",
+        "flows.flow_company_enrichment",
     ],
 )
 
