@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     CELERY_CONCURRENCY: int = 2
 
     # Playwright & Virtual Display
-    PLAYWRIGHT_HEADLESS: bool = False
+    PLAYWRIGHT_HEADLESS: bool = True
     PLAYWRIGHT_USER_DATA_DIR: str = "/app/data/browser_profile"
     PLAYWRIGHT_TIMEOUT_MS: int = 30000
     DISPLAY: str = ":99"

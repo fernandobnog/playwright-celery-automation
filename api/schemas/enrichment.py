@@ -32,7 +32,7 @@ class DigitalPresence(BaseModel):
     linkedin_url: Optional[str] = Field(default=None, description="URL da Company Page no LinkedIn")
     telefones: List[str] = Field(default_factory=list, description="Telefones institucionais ou de atendimento")
     emails: List[str] = Field(default_factory=list, description="E-mails corporativos (contato, comercial, etc.)")
-    outras_redes: Dict[str, str] = Field(default_factory=dict, description="Outros links (Instagram, YouTube, etc.)")
+    outras_redes: List[str] = Field(default_factory=list, description="Outros links (Instagram, YouTube, etc.)")
 
 
 class MarketProfile(BaseModel):

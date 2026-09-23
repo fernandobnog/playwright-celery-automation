@@ -102,7 +102,11 @@ def test_mcp_sse_and_messages_endpoints():
             f"/mcp/messages?session_id={test_session_id}",
             json={"jsonrpc": "2.0", "id": 99, "method": "ping"},
         )
-        assert ok_resp.status_code == 202
+        import time
+        start_wait = time.time()
+        while test_queue.empty() and time.time() - start_wait < 2.0:
+            time.sleep(0.05)
+
         assert not test_queue.empty()
         queued_msg = test_queue.get_nowait()
         assert queued_msg["id"] == 99

@@ -46,7 +46,7 @@ def enrich_unified_post(payload: QuickEnrichRequest):
         result = enrich_unified_pipeline(payload)
         return result
     except Exception as e:
-        logger.error("Failed to execute unified enrichment for '%s': %s", payload.name, e)
+        logger.error("Failed to execute unified enrichment for '%s': %s", payload.name, e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Erro ao enriquecer empresa via Google e LinkedIn: {str(e)}")
 
 

@@ -36,7 +36,7 @@ def task_google_search(
     task_id = self.request.id
     logger.info("[%s] Celery worker starting Google Search for: '%s'", task_id, query)
 
-    with GoogleSearchScraper() as scraper:
+    with GoogleSearchScraper(ephemeral=True) as scraper:
         result = scraper.search(
             query=query,
             num_results=num_results,

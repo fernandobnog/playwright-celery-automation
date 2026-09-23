@@ -110,6 +110,34 @@ def _is_official_domain_candidate(url: str) -> bool:
         return False
 
 
+def execute_google_search(query: str, num_results: int = 10) -> dict:
+    """
+    Executes Google search via Celery scraping worker (equipped with Xvfb, noVNC, and anti-bot profile)
+    with resilient fallback to direct GoogleSearchScraper in ephemeral/isolated mode.
+    """
+    # 1. First attempt: Celery scraping worker with Xvfb
+    try:
+        from flows.tasks_google_search import task_google_search
+        async_task = task_google_search.apply_async(
+            kwargs={"query": query, "num_results": num_results},
+            expires=40,
+        )
+        data = async_task.get(timeout=35)
+        if data and isinstance(data, dict):
+            logger.info("Celery google search succeeded for '%s' (results=%d)", query[:40], len(data.get("organic_results", [])))
+            return data
+    except Exception as e_celery:
+        logger.warning("Celery search delegation failed or timed out for '%s' (%s). Trying direct scraper fallback...", query[:40], e_celery)
+
+    # 2. Fallback: Direct Playwright GoogleSearchScraper in ephemeral mode
+    try:
+        with GoogleSearchScraper(ephemeral=True) as scraper:
+            return scraper.search(query, num_results=num_results)
+    except Exception as e_direct:
+        logger.error("Direct google search failed for '%s': %s", query[:40], e_direct)
+        return {"query": query, "total_results": 0, "organic_results": []}
+
+
 def enrich_company_pipeline(
     request: CompanyEnrichmentRequest,
     gemini_client: Optional[GeminiClient] = None,
@@ -138,7 +166,7 @@ def enrich_company_pipeline(
             prompt=planner_prompt,
             system_instruction=QUERY_PLANNER_SYSTEM_INSTRUCTION,
             response_model=SearchRefinementPlan,
-            model_name="gemini-2.5-flash",
+            model_name="gemini-3.5-flash-lite",
         )
         logger.info("Refined search queries generated: Primary='%s', Fiscal='%s'", plan.primary_query, plan.fiscal_query)
     except Exception as e_plan:
@@ -157,26 +185,25 @@ def enrich_company_pipeline(
     collected_results = []
     seen_urls = set()
 
-    with GoogleSearchScraper() as scraper:
-        # 1. Primary organic search (site & institutional)
-        try:
-            res_primary = scraper.search(plan.primary_query, num_results=6)
-            for item in res_primary.get("organic_results", []):
-                if item["url"] not in seen_urls:
-                    seen_urls.add(item["url"])
-                    collected_results.append(item)
-        except Exception as e_prim:
-            logger.warning("Primary search failed: %s", e_prim)
+    # 1. Primary organic search (site & institutional)
+    try:
+        res_primary = execute_google_search(plan.primary_query, num_results=6)
+        for item in res_primary.get("organic_results", []):
+            if item["url"] not in seen_urls:
+                seen_urls.add(item["url"])
+                collected_results.append(item)
+    except Exception as e_prim:
+        logger.warning("Primary search failed: %s", e_prim)
 
-        # 2. Fiscal search (CNPJ & registry data)
-        try:
-            res_fiscal = scraper.search(plan.fiscal_query, num_results=5)
-            for item in res_fiscal.get("organic_results", []):
-                if item["url"] not in seen_urls:
-                    seen_urls.add(item["url"])
-                    collected_results.append(item)
-        except Exception as e_fisc:
-            logger.warning("Fiscal search failed: %s", e_fisc)
+    # 2. Fiscal search (CNPJ & registry data)
+    try:
+        res_fiscal = execute_google_search(plan.fiscal_query, num_results=5)
+        for item in res_fiscal.get("organic_results", []):
+            if item["url"] not in seen_urls:
+                seen_urls.add(item["url"])
+                collected_results.append(item)
+    except Exception as e_fisc:
+        logger.warning("Fiscal search failed: %s", e_fisc)
 
     # --------------------------------------------------------------------------
     # Stage 3: Deep Scraping of Candidate Official Website (Optional)
@@ -233,7 +260,7 @@ def enrich_company_pipeline(
             prompt=synthesis_prompt,
             system_instruction=SYNTHESIS_SYSTEM_INSTRUCTION,
             response_model=CompanyEnrichmentResponse,
-            model_name="gemini-2.5-flash",
+            model_name="gemini-3.5-flash-lite",
         )
     except Exception as e_synth:
         logger.error("Synthesis failed: %s. Constructing baseline response.", e_synth)
@@ -342,7 +369,7 @@ def find_decision_makers_pipeline(
             prompt=planner_prompt,
             system_instruction=DECISION_MAKERS_PLANNER_INSTRUCTION,
             response_model=DecisionMakersQueryPlan,
-            model_name="gemini-2.5-flash",
+            model_name="gemini-3.5-flash-lite",
         )
         logger.info("Decision maker queries generated: C-Level='%s', Directors='%s'", plan.query_c_level, plan.query_directors_heads)
     except Exception as e_plan:
@@ -356,29 +383,28 @@ def find_decision_makers_pipeline(
     collected_results = []
     seen_urls = set()
 
-    with GoogleSearchScraper() as scraper:
-        # Search 1: C-Level & Executives
+    # Search 1: C-Level & Executives
+    try:
+        res_c = execute_google_search(plan.query_c_level, num_results=request.max_results)
+        for item in res_c.get("organic_results", []):
+            u = item.get("url", "")
+            if "linkedin.com/in/" in u and u not in seen_urls:
+                seen_urls.add(u)
+                collected_results.append(item)
+    except Exception as e_c:
+        logger.warning("C-Level search failed: %s", e_c)
+
+    # Search 2: Directors & Heads
+    if len(collected_results) < request.max_results:
         try:
-            res_c = scraper.search(plan.query_c_level, num_results=request.max_results)
-            for item in res_c.get("organic_results", []):
+            res_dh = execute_google_search(plan.query_directors_heads, num_results=request.max_results)
+            for item in res_dh.get("organic_results", []):
                 u = item.get("url", "")
                 if "linkedin.com/in/" in u and u not in seen_urls:
                     seen_urls.add(u)
                     collected_results.append(item)
-        except Exception as e_c:
-            logger.warning("C-Level search failed: %s", e_c)
-
-        # Search 2: Directors & Heads
-        if len(collected_results) < request.max_results:
-            try:
-                res_dh = scraper.search(plan.query_directors_heads, num_results=request.max_results)
-                for item in res_dh.get("organic_results", []):
-                    u = item.get("url", "")
-                    if "linkedin.com/in/" in u and u not in seen_urls:
-                        seen_urls.add(u)
-                        collected_results.append(item)
-            except Exception as e_dh:
-                logger.warning("Directors/Heads search failed: %s", e_dh)
+        except Exception as e_dh:
+            logger.warning("Directors/Heads search failed: %s", e_dh)
 
     # 3. AI synthesis of structured decision makers
     evidence_lines = []
@@ -408,7 +434,7 @@ def find_decision_makers_pipeline(
             prompt=synthesis_prompt,
             system_instruction=DECISION_MAKERS_SYNTHESIS_INSTRUCTION,
             response_model=DecisionMakersResponse,
-            model_name="gemini-2.5-flash",
+            model_name="gemini-3.5-flash-lite",
         )
     except Exception as e_synth:
         logger.error("Decision makers synthesis failed: %s", e_synth)
@@ -498,23 +524,22 @@ def extract_linkedin_company_pipeline(
 
     search_items = []
 
-    def _execute_search(s: GoogleSearchScraper):
-        nonlocal search_items
+    if scraper:
         try:
-            res = s.search(query, num_results=4)
+            res = scraper.search(query, num_results=4)
             for item in res.get("organic_results", []):
                 u = item.get("url", "")
                 if "linkedin.com/company" in u:
                     search_items.append(item)
         except Exception as e:
-            logger.warning("LinkedIn company search failed for '%s': %s", company_clean, e)
-
-    if scraper:
-        _execute_search(scraper)
+            logger.warning("LinkedIn company search via provided scraper failed for '%s': %s", company_clean, e)
     else:
         try:
-            with GoogleSearchScraper() as sc:
-                _execute_search(sc)
+            res = execute_google_search(query, num_results=4)
+            for item in res.get("organic_results", []):
+                u = item.get("url", "")
+                if "linkedin.com/company" in u:
+                    search_items.append(item)
         except Exception as e_sc:
             logger.warning("Scraper session error for LinkedIn company: %s", e_sc)
 
@@ -548,7 +573,7 @@ def extract_linkedin_company_pipeline(
             prompt=prompt,
             system_instruction=LINKEDIN_COMPANY_SYSTEM_INSTRUCTION,
             response_model=LinkedInCompanyProfile,
-            model_name="gemini-2.5-flash",
+            model_name="gemini-3.5-flash-lite",
         )
         if known_linkedin_url and not profile.url:
             profile.url = known_linkedin_url

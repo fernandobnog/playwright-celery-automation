@@ -26,7 +26,15 @@ logging.basicConfig(
 logger = logging.getLogger("mcp_enrichment_server")
 
 # Default environment configuration
-DEFAULT_API_URL = os.environ.get("OMNIFLOW_API_URL", "https://api.fernandonogueira.dev.br").rstrip("/")
+def _get_default_api_url() -> str:
+    env_url = os.environ.get("OMNIFLOW_API_URL")
+    if env_url:
+        return env_url.rstrip("/")
+    if os.path.exists("/.dockerenv") or os.environ.get("SERVICE_TYPE") == "api":
+        return "http://127.0.0.1:8000"
+    return "https://api.fernandonogueira.dev.br"
+
+DEFAULT_API_URL = _get_default_api_url()
 DEFAULT_API_KEY = os.environ.get(
     "OMNIFLOW_API_KEY",
     "omniflow_232750db9cac2682c20ffadd0bce268f2d85764bc1149921",
@@ -141,8 +149,9 @@ def _http_request(
             url += f"?{urllib.parse.urlencode(filtered)}"
 
     headers = {
-        "Accept": "application/json",
-        "User-Agent": "OmniFlow-MCP-Server/1.0",
+        "Accept": "application/json, text/plain, */*",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
     }
     if api_key:
         headers["X-API-Key"] = api_key
@@ -217,7 +226,7 @@ def handle_tools_call(req_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 "location": args.get("location"),
                 "deep_scrape": args.get("deep_scrape", True),
             }
-            res = _http_request("/api/v1/enrich", method="POST", data=payload, timeout=120)
+            res = _http_request("/api/v1/enrich", method="POST", data=payload, timeout=240)
 
         elif tool_name == "find_decision_makers":
             company_name = args.get("company_name") or args.get("name")
@@ -228,7 +237,7 @@ def handle_tools_call(req_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 "website_or_domain": args.get("website_or_domain"),
                 "max_results": args.get("max_results", 10),
             }
-            res = _http_request("/api/v1/enrich/decision-makers", method="POST", data=payload, timeout=90)
+            res = _http_request("/api/v1/enrich/decision-makers", method="POST", data=payload, timeout=180)
 
         elif tool_name == "get_linkedin_company_profile":
             name = args.get("name") or args.get("company_name")
@@ -238,7 +247,7 @@ def handle_tools_call(req_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 "name": name,
                 "location": args.get("location"),
             }
-            res = _http_request("/api/v1/enrich/linkedin/company", method="POST", data=payload, timeout=60)
+            res = _http_request("/api/v1/enrich/linkedin/company", method="POST", data=payload, timeout=120)
 
         else:
             return {

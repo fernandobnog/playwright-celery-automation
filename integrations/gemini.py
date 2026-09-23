@@ -4,7 +4,7 @@ Integrates via the official google-genai SDK for deterministic entity extraction
 """
 
 import logging
-from typing import List, Optional, Type, TypeVar
+from typing import Any, List, Optional, Type, TypeVar
 from pydantic import BaseModel, Field
 
 from core.config import settings
@@ -66,6 +66,18 @@ class CuradoriaPautasResult(BaseModel):
 # ==============================================================================
 # Gemini Wrapper
 # ==============================================================================
+def _clean_schema_dict(d: Any) -> Any:
+    if isinstance(d, dict):
+        d.pop("additionalProperties", None)
+        d.pop("title", None)
+        for v in d.values():
+            _clean_schema_dict(v)
+    elif isinstance(d, list):
+        for item in d:
+            _clean_schema_dict(item)
+    return d
+
+
 class GeminiClient:
     """
     Wrapper for Google GenAI SDK with structured output enforcement.
@@ -88,16 +100,18 @@ class GeminiClient:
         """
         from google.genai import types
 
+        cleaned_schema = _clean_schema_dict(response_model.model_json_schema())
+
         config = types.GenerateContentConfig(
             system_instruction=system_instruction,
             response_mime_type="application/json",
-            response_schema=response_model,
+            response_schema=cleaned_schema,
             temperature=0.2,
             max_output_tokens=16384,
         )
 
         models_to_try = [model_name]
-        for fallback in ["gemini-3.5-flash", "gemini-flash-latest", "gemini-3.5-flash-lite"]:
+        for fallback in ["gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.1-flash-lite"]:
             if fallback not in models_to_try:
                 models_to_try.append(fallback)
 
@@ -117,11 +131,11 @@ class GeminiClient:
                     last_error = e
                     err_str = str(e).upper()
                     logger.warning("Gemini model %s attempt %d failed: %s. Trying next...", current_model, attempt + 1, e)
-                    # If model is overloaded (503 / UNAVAILABLE), immediately try next fallback model
-                    if "503" in err_str or "UNAVAILABLE" in err_str or "HIGH DEMAND" in err_str:
+                    # If model is overloaded, rate-limited (429), quota exhausted or unavailable, immediately try next fallback model
+                    if any(tok in err_str for tok in ["503", "UNAVAILABLE", "HIGH DEMAND", "429", "RESOURCE_EXHAUSTED", "QUOTA", "RATE_LIMIT"]):
                         break
                     import time
-                    time.sleep(2)
+                    time.sleep(1)
 
         if last_error:
             raise last_error
