@@ -82,19 +82,37 @@ STEALTH_EVASION_SCRIPT = """
         configurable: true
     });
 
-    // 6. Spoof WebGL Vendor and Renderer
-    const getParameter = WebGLRenderingContext.prototype.getParameter;
-    WebGLRenderingContext.prototype.getParameter = function(parameter) {
-        // UNMASKED_VENDOR_WEBGL
-        if (parameter === 37445) {
-            return 'Google Inc. (NVIDIA)';
-        }
-        // UNMASKED_RENDERER_WEBGL
-        if (parameter === 37446) {
-            return 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Direct3D11 vs_5_0 ps_5_0)';
-        }
-        return getParameter.apply(this, arguments);
+    // 6. Spoof WebGL & WebGL2 Vendor and Renderer consistent with OS platform
+    const isWindows = navigator.userAgent.includes('Windows') || navigator.platform.includes('Win');
+    const isMac = navigator.userAgent.includes('Macintosh') || navigator.platform.includes('Mac');
+    
+    let glVendor = 'Google Inc. (NVIDIA)';
+    let glRenderer = 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3080, OpenGL 4.5.0)';
+    if (isWindows) {
+        glRenderer = 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3080 Direct3D11 vs_5_0 ps_5_0)';
+    } else if (isMac) {
+        glVendor = 'Apple';
+        glRenderer = 'Apple M1 Pro';
+    }
+
+    const patchGL = (proto) => {
+        if (!proto) return;
+        const originalGetParameter = proto.getParameter;
+        proto.getParameter = function(parameter) {
+            // UNMASKED_VENDOR_WEBGL
+            if (parameter === 37445) {
+                return glVendor;
+            }
+            // UNMASKED_RENDERER_WEBGL
+            if (parameter === 37446) {
+                return glRenderer;
+            }
+            return originalGetParameter.apply(this, arguments);
+        };
     };
+
+    patchGL(window.WebGLRenderingContext ? WebGLRenderingContext.prototype : null);
+    patchGL(window.WebGL2RenderingContext ? WebGL2RenderingContext.prototype : null);
 
     // 7. Notification permissions spoofing
     if (window.Notification) {

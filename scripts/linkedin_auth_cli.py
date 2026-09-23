@@ -11,7 +11,7 @@ from playwright.sync_api import sync_playwright
 from redis import Redis
 
 from core.config import settings
-from scrapers.humanizer import human_sleep
+from scrapers.humanizer import human_click, human_sleep, human_type
 from scrapers.linkedin_publisher import REDIS_AUTH_KEY, linkedin_publisher
 from scrapers.stealth import STEALTH_EVASION_SCRIPT, get_random_user_agent, get_random_viewport
 
@@ -75,11 +75,11 @@ def authenticate_linkedin(pin: str = None) -> bool:
                 for p_sel in pin_inputs:
                     loc = page.locator(p_sel).first
                     if loc.is_visible(timeout=3000):
-                        loc.fill(pin.strip())
-                        human_sleep(0.5, 1.0)
+                        human_type(page, loc, pin.strip(), min_delay_ms=80, max_delay_ms=220)
+                        human_sleep(0.8, 1.5)
                         submit_btn = page.locator("button[type='submit'], button#email-pin-submit-button").first
                         if submit_btn.is_visible():
-                            submit_btn.click()
+                            human_click(page, submit_btn)
                         page.wait_for_load_state("domcontentloaded", timeout=20000)
                         human_sleep(3.0, 5.0)
                         break
@@ -92,30 +92,28 @@ def authenticate_linkedin(pin: str = None) -> bool:
             # 3. Perform login
             logger.info("Navigating to https://www.linkedin.com/login...")
             page.goto("https://www.linkedin.com/login", wait_until="domcontentloaded")
-            human_sleep(1.5, 2.5)
+            human_sleep(2.0, 3.5)
 
-            # Fill username
+            # Fill username with organic keystroke rhythm
             user_input = page.locator("input[type='email']:visible, input[name='session_key']:visible, input#username:visible").first
             if user_input.is_visible(timeout=5000):
-                user_input.click()
-                user_input.fill(username)
-                human_sleep(0.4, 0.8)
+                human_type(page, user_input, username, min_delay_ms=75, max_delay_ms=200)
+                human_sleep(0.8, 1.5)
 
-            # Fill password
+            # Fill password with organic keystroke rhythm
             pass_input = page.locator("input[type='password']:visible, input[name='session_password']:visible, input#password:visible").first
             if pass_input.is_visible(timeout=5000):
-                pass_input.click()
-                pass_input.fill(password)
-                human_sleep(0.4, 0.8)
+                human_type(page, pass_input, password, min_delay_ms=80, max_delay_ms=220)
+                human_sleep(1.0, 2.0)
 
-            # Submit
+            # Submit via human click
             submit_btn = page.get_by_role("button", name="Entrar", exact=True)
             if not submit_btn.is_visible():
                 submit_btn = page.get_by_role("button", name="Sign in", exact=True)
             if not submit_btn.is_visible():
                 submit_btn = page.locator("button[type='submit']:visible, button.btn__primary--large:visible").first
             if submit_btn.is_visible(timeout=5000):
-                submit_btn.click()
+                human_click(page, submit_btn)
 
             page.wait_for_load_state("domcontentloaded", timeout=25000)
             human_sleep(4.0, 6.0)

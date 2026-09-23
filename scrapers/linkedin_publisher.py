@@ -16,7 +16,13 @@ from playwright.sync_api import BrowserContext, Page, sync_playwright
 from redis import Redis
 
 from core.config import settings
-from scrapers.humanizer import human_click, human_scroll, human_sleep
+from scrapers.humanizer import (
+    human_click,
+    human_idle_wander,
+    human_scroll,
+    human_sleep,
+    human_type,
+)
 from scrapers.stealth import STEALTH_EVASION_SCRIPT, get_random_user_agent, get_random_viewport
 
 logger = logging.getLogger(__name__)
@@ -301,15 +307,15 @@ class LinkedInPublisher:
             try:
                 self.ensure_authenticated(page, context)
 
-                # Organic warm-up scroll on feed before opening post modal
+                # Organic warm-up scroll and idle gaze on feed before opening post modal
                 try:
-                    human_scroll(page, steps=2, min_distance=80, max_distance=220)
+                    human_scroll(page, steps=random.randint(2, 3), min_distance=100, max_distance=260)
                     page.mouse.wheel(0, -120)
-                    human_sleep(1.0, 2.0)
+                    human_idle_wander(page, duration_sec=random.uniform(1.5, 3.0))
                 except Exception:
                     pass
 
-                # 1. Click "Start a post" / "Começar publicação"
+                # 1. Click "Start a post" / "Começar publicação" with Bézier mouse motion
                 post_triggers = [
                     "p:has-text('Começar publicação')",
                     "div:has-text('Começar publicação')",
@@ -324,16 +330,16 @@ class LinkedInPublisher:
                 for sel in post_triggers:
                     loc = page.locator(sel).first
                     if loc.is_visible(timeout=3000):
-                        loc.click()
+                        human_click(page, loc)
                         clicked = True
                         break
 
                 if not clicked:
                     # Fallback: navigate directly to share modal if trigger not found
                     page.keyboard.press("c")  # LinkedIn hotkey for create post if active
-                    human_sleep(1.0, 2.0)
+                    human_sleep(1.5, 2.5)
 
-                human_sleep(1.5, 2.5)
+                human_sleep(2.0, 3.5)
 
                 # 2. Wait for modal editor area (allowing for spinner to resolve)
                 editor_selectors = [
@@ -364,9 +370,6 @@ class LinkedInPublisher:
                     page.screenshot(path=shot_err)
                     raise RuntimeError(f"Could not locate LinkedIn post modal text editor. Screenshot: {shot_err}")
 
-                editor.click()
-                human_sleep(0.5, 1.0)
-
                 # Clean text: strip raw divider lines, trailing CANAL headers, and markdown asterisks
                 clean_feed_lines = []
                 for line in text.splitlines():
@@ -380,9 +383,11 @@ class LinkedInPublisher:
                 clean_feed_text = re.sub(r'\*\*([^*]+)\*\*', r'\1', clean_feed_text)
                 clean_feed_text = re.sub(r'(?<!\w)\*([^*]+)\*(?!\w)', r'\1', clean_feed_text)
 
-                # Insert the text smoothly preserving line breaks and emojis
-                page.keyboard.insert_text(clean_feed_text)
-                human_sleep(1.0, 2.0)
+                # Focus editor and type character by character with non-uniform frequency
+                human_idle_wander(page, duration_sec=random.uniform(1.0, 2.2))
+                logger.info("Typing feed post with non-uniform human cadence (%d chars)...", len(clean_feed_text))
+                human_type(page, editor, clean_feed_text, min_delay_ms=75, max_delay_ms=220)
+                human_sleep(2.0, 4.0)
 
                 # 3. Handle optional image upload
                 if image_path and Path(image_path).exists():
@@ -390,17 +395,17 @@ class LinkedInPublisher:
                         media_btn = page.locator("button[aria-label*='media'], button[aria-label*='mídia'], button[aria-label*='photo'], button[aria-label*='foto']").first
                         if media_btn.is_visible(timeout=2000):
                             with page.expect_file_chooser(timeout=5000) as fc_info:
-                                media_btn.click()
+                                human_click(page, media_btn)
                             file_chooser = fc_info.value
                             file_chooser.set_files(image_path)
-                            human_sleep(2.0, 3.0)
+                            human_sleep(2.5, 4.0)
 
                             # Click "Next" button in media preview
                             next_btn = page.locator("button:has-text('Next'), button:has-text('Avançar')").first
                             for _ in range(10):
                                 if next_btn.is_visible():
-                                    next_btn.click()
-                                    human_sleep(1.5, 2.5)
+                                    human_click(page, next_btn)
+                                    human_sleep(1.8, 3.0)
                                     break
                                 time.sleep(1.0)
                     except Exception as err_img:
@@ -420,7 +425,8 @@ class LinkedInPublisher:
                         btn = page.locator(btn_sel).first
                         try:
                             if btn.is_visible() and btn.is_enabled():
-                                btn.click()
+                                human_idle_wander(page, duration_sec=random.uniform(2.0, 4.0))
+                                human_click(page, btn)
                                 post_clicked = True
                                 break
                         except Exception:
@@ -434,7 +440,7 @@ class LinkedInPublisher:
                     page.screenshot(path=shot_submit_err)
                     raise RuntimeError("Post button not clickable in LinkedIn modal.")
 
-                human_sleep(4.0, 6.0)
+                human_sleep(5.0, 8.0)
 
                 # Verify submission
                 self.save_session_to_disk_and_redis(context)
@@ -507,7 +513,8 @@ class LinkedInPublisher:
 
                 # 1. Navigate to modern article editor
                 page.goto("https://www.linkedin.com/article/new/", wait_until="domcontentloaded", timeout=self.timeout_ms)
-                human_sleep(3.0, 4.5)
+                human_sleep(3.5, 5.0)
+                human_idle_wander(page, duration_sec=random.uniform(1.5, 3.0))
 
                 # 2. Optional: Upload cover image
                 if image_path and Path(image_path).exists():
@@ -515,16 +522,16 @@ class LinkedInPublisher:
                         cover_btn = page.locator("button:has-text('Carregar do computador'), button:has-text('Upload from computer')").first
                         if cover_btn.is_visible(timeout=4000):
                             with page.expect_file_chooser(timeout=5000) as fc_info:
-                                cover_btn.click()
+                                human_click(page, cover_btn)
                             file_chooser = fc_info.value
                             file_chooser.set_files(image_path)
-                            human_sleep(2.5, 3.5)
+                            human_sleep(3.0, 4.5)
 
                             # Click modal Avançar / Salvar
                             modal_apply = page.locator("div[role='dialog'] button:has-text('Avançar'), div.artdeco-modal button:has-text('Avançar')").first
                             if modal_apply.is_visible(timeout=4000):
-                                modal_apply.click()
-                                human_sleep(2.0, 3.0)
+                                human_click(page, modal_apply)
+                                human_sleep(2.5, 4.0)
                                 logger.info("Cover image attached to Pulse article: %s", image_path)
                     except Exception as err_cover:
                         logger.warning("Could not attach cover image to Pulse article (%s). Continuing with text...", err_cover)
@@ -555,10 +562,9 @@ class LinkedInPublisher:
                     page.screenshot(path=shot_err)
                     raise RuntimeError(f"Could not find title field in article editor. Screenshot: {shot_err}")
 
-                title_loc.click()
-                human_sleep(0.5, 1.0)
-                page.keyboard.insert_text(title.strip())
-                human_sleep(1.0, 2.0)
+                logger.info("Typing Pulse article title with non-uniform human cadence: '%s'", title)
+                human_type(page, title_loc, title.strip(), min_delay_ms=85, max_delay_ms=250)
+                human_sleep(1.5, 3.0)
 
                 # 4. Clean and fill article body text into ProseMirror using rich HTML
                 article_html = markdown_to_linkedin_pulse_html(content_markdown, blog_url)
@@ -588,14 +594,14 @@ class LinkedInPublisher:
                     page.screenshot(path=shot_err)
                     raise RuntimeError(f"Could not find body area in article editor. Screenshot: {shot_err}")
 
-                body_loc.click()
-                human_sleep(0.5, 1.0)
+                human_click(page, body_loc)
+                human_sleep(0.8, 1.6)
 
                 # Clear default paragraph
                 page.keyboard.press("Control+A")
-                human_sleep(0.2, 0.4)
+                human_sleep(0.3, 0.6)
                 page.keyboard.press("Backspace")
-                human_sleep(0.4, 0.8)
+                human_sleep(0.5, 1.0)
 
                 # Paste rich HTML cleanly into ProseMirror
                 page.evaluate('''html => {
@@ -610,6 +616,12 @@ class LinkedInPublisher:
                     });
                     editor.dispatchEvent(pasteEvent);
                 }''', article_html)
+                
+                # Organic reading and review scroll across long draft
+                human_sleep(2.5, 4.0)
+                human_scroll(page, steps=3, min_distance=150, max_distance=300)
+                human_sleep(1.5, 3.0)
+                human_scroll(page, steps=2, min_distance=-300, max_distance=-150)
                 human_sleep(2.0, 3.5)
 
                 # 5. Click Avançar button (top right)
@@ -637,16 +649,17 @@ class LinkedInPublisher:
                     page.screenshot(path=shot_err)
                     raise RuntimeError("Avançar button not ready in article editor.")
 
-                next_btn.click()
-                human_sleep(3.0, 5.0)
+                human_idle_wander(page, duration_sec=random.uniform(1.8, 3.2))
+                human_click(page, next_btn)
+                human_sleep(3.5, 5.5)
 
                 # 6. In the post-sharing modal, add optional hook and click primary Publicar
                 share_input = page.locator("div[role='dialog'] div[role='textbox'], div[role='dialog'] div.ProseMirror").first
                 if share_input.is_visible(timeout=4000):
-                    share_input.click()
                     share_hook = f"Compartilho meu novo artigo de liderança no LinkedIn: '{title.strip()}'. Leitura completa abaixo 👇"
-                    page.keyboard.insert_text(share_hook)
-                    human_sleep(1.0, 2.0)
+                    logger.info("Typing share modal hook with human cadence...")
+                    human_type(page, share_input, share_hook, min_delay_ms=75, max_delay_ms=220)
+                    human_sleep(2.0, 4.0)
 
                 # Click primary action publish button (not the audience settings button)
                 pub_btn_selectors = [
@@ -674,7 +687,8 @@ class LinkedInPublisher:
                     page.screenshot(path=shot_err)
                     raise RuntimeError("Final Publicar button not found or enabled in share dialog.")
 
-                pub_btn.click()
+                human_idle_wander(page, duration_sec=random.uniform(2.5, 4.5))
+                human_click(page, pub_btn)
                 human_sleep(8.0, 12.0)
 
                 self.save_session_to_disk_and_redis(context)
