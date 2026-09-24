@@ -4,8 +4,62 @@ Defines strict schemas for search refinement, cadastral data, digital presence,
 market positioning, and commercial intelligence.
 """
 
-from typing import Any, Dict, List, Literal, Optional
+import re
+from typing import Any, Dict, List, Literal, Optional, Union
 from pydantic import BaseModel, Field, model_validator
+
+
+def _normalize_string_list(val: Any) -> List[str]:
+    """Flattens and normalizes comma-separated strings or string lists into a clean unique list."""
+    if not val:
+        return []
+    if isinstance(val, list):
+        res = []
+        for x in val:
+            if isinstance(x, str):
+                for part in re.split(r"[,;\n]+", x):
+                    s = part.strip()
+                    if s and s not in res:
+                        res.append(s)
+            elif x:
+                s = str(x).strip()
+                if s and s not in res:
+                    res.append(s)
+        return res
+    if isinstance(val, str):
+        res = []
+        for part in re.split(r"[,;\n]+", val):
+            s = part.strip()
+            if s and s not in res:
+                res.append(s)
+        return res
+    return []
+
+
+class ContactInput(BaseModel):
+    """Contato opcional de lead ou executivo fornecido na requisição."""
+    nome: Optional[str] = Field(default=None, description="Nome completo da pessoa")
+    email: Optional[str] = Field(default=None, description="E-mail profissional ou pessoal")
+    telefone: Optional[str] = Field(default=None, description="Telefone fixo ou WhatsApp")
+    cargo: Optional[str] = Field(default=None, description="Cargo ou área da pessoa, se conhecido")
+
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_contact_aliases(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            for alt in ["name", "full_name", "pessoa", "person"]:
+                if alt in data and not data.get("nome"):
+                    data["nome"] = data[alt]
+            for alt in ["mail", "e-mail"]:
+                if alt in data and not data.get("email"):
+                    data["email"] = data[alt]
+            for alt in ["phone", "celular", "whatsapp", "tel"]:
+                if alt in data and not data.get("telefone"):
+                    data["telefone"] = data[alt]
+            for alt in ["role", "position", "title"]:
+                if alt in data and not data.get("cargo"):
+                    data["cargo"] = data[alt]
+        return data
 
 
 class SearchRefinementPlan(BaseModel):
@@ -19,7 +73,7 @@ class SearchRefinementPlan(BaseModel):
 class CadastralData(BaseModel):
     """Dados cadastrais e societários públicos da empresa."""
     razao_social: Optional[str] = Field(default=None, description="Razão Social completa oficial")
-    nome_fantasia: str = Field(description="Nome fantasia ou marca comercial")
+    nome_fantasia: Optional[str] = Field(default=None, description="Nome fantasia ou marca comercial")
     cnpj: Optional[str] = Field(default=None, description="Número de CNPJ (formatado ou não), se identificado")
     situacao_cadastral: Optional[str] = Field(default=None, description="Situação cadastral (ex: Ativa, Baixada) se identificada")
     data_abertura: Optional[str] = Field(default=None, description="Ano ou data de fundação/abertura se mencionada")
@@ -80,17 +134,76 @@ class CompanyEnrichmentRequest(BaseModel):
         default=True,
         description="Se true, faz o download do conteúdo da página oficial identificada para extração mais profunda",
     )
+    people: List[str] = Field(
+        default_factory=list,
+        description="Lista de pessoas/executivos da empresa para busca direcionada no LinkedIn e QSA",
+    )
+    emails: List[str] = Field(
+        default_factory=list,
+        description="Lista de e-mails para validação SMTP e detecção do padrão corporativo",
+    )
+    phones: List[str] = Field(
+        default_factory=list,
+        description="Lista de telefones para higienização e validação de WhatsApp",
+    )
+    contacts: List[ContactInput] = Field(
+        default_factory=list,
+        description="Lista estruturada de contatos (nome, email, telefone, cargo)",
+    )
 
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_aliases(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "company_name" not in data:
+                for alt in ["name", "company", "empresa", "nome"]:
+                    if alt in data and data[alt]:
+                        data["company_name"] = data[alt]
+                        break
+            if "location_hint" not in data:
+                for alt in ["location", "cidade", "estado"]:
+                    if alt in data and data[alt]:
+                        data["location_hint"] = data[alt]
+                        break
 
-class CompanyEnrichmentResponse(BaseModel):
-    """Resposta estruturada de enriquecimento de empresa."""
-    status: str = Field(default="SUCCESS")
-    nome_pesquisado: str
-    dados_cadastrais: CadastralData
-    presenca_digital: DigitalPresence
-    perfil_mercado: MarketProfile
-    inteligencia_comercial: CommercialIntelligence
-    execution_time_seconds: Optional[float] = None
+            # normalize people
+            peop = _normalize_string_list(data.get("people"))
+            for alt in ["person", "person_name", "pessoa", "nome_pessoa", "target_people"]:
+                if alt in data and data[alt]:
+                    peop.extend(_normalize_string_list(data[alt]))
+
+            # normalize emails
+            em_list = _normalize_string_list(data.get("emails"))
+            for alt in ["email", "mail", "e-mail"]:
+                if alt in data and data[alt]:
+                    em_list.extend(_normalize_string_list(data[alt]))
+
+            # normalize phones
+            ph_list = _normalize_string_list(data.get("phones"))
+            for alt in ["phone", "telefone", "celular", "whatsapp", "tel"]:
+                if alt in data and data[alt]:
+                    ph_list.extend(_normalize_string_list(data[alt]))
+
+            # if contacts list passed, merge into lists
+            contacts_raw = data.get("contacts") or []
+            if isinstance(contacts_raw, list):
+                for c in contacts_raw:
+                    if isinstance(c, dict):
+                        c_name = c.get("nome") or c.get("name") or c.get("pessoa")
+                        c_mail = c.get("email") or c.get("mail")
+                        c_ph = c.get("telefone") or c.get("phone") or c.get("whatsapp")
+                        if c_name and c_name not in peop:
+                            peop.append(c_name)
+                        if c_mail and c_mail not in em_list:
+                            em_list.append(c_mail)
+                        if c_ph and c_ph not in ph_list:
+                            ph_list.append(c_ph)
+
+            data["people"] = list(dict.fromkeys(peop))
+            data["emails"] = list(dict.fromkeys(em_list))
+            data["phones"] = list(dict.fromkeys(ph_list))
+
+        return data
 
 
 # ==============================================================================
@@ -119,6 +232,49 @@ class DecisionMakerProfile(BaseModel):
         description="Se as evidências indicam que a pessoa atua atualmente na empresa (e não apenas experiência passada)",
     )
     resumo_experiencia: Optional[str] = Field(default=None, description="Resumo das atribuições ou histórico profissional citado no snippet")
+    origem_dado: Optional[str] = Field(
+        default="LINKEDIN_OSINT",
+        description="Origem: ENVIADO_PELO_USUARIO, QSA_RECEITA_FEDERAL ou LINKEDIN_OSINT",
+    )
+    pertence_ao_qsa: bool = Field(
+        default=False,
+        description="Indica se a pessoa consta no Quadro de Sócios e Administradores (QSA) oficial",
+    )
+    cargo_qsa: Optional[str] = Field(
+        default=None,
+        description="Cargo formal registrado na Receita Federal (se for sócio)",
+    )
+    whatsapp_valido: Optional[bool] = Field(
+        default=None,
+        description="Indica se o telefone possui WhatsApp ativo confirmado via Evolution API",
+    )
+    emails_associados: List[str] = Field(
+        default_factory=list,
+        description="Lista de emails corporativos ou diretos associados ao decisor",
+    )
+    telefones_associados: List[str] = Field(
+        default_factory=list,
+        description="Lista de telefones ou WhatsApp associados ao decisor",
+    )
+
+
+class CompanyEnrichmentResponse(BaseModel):
+    """Resposta estruturada de enriquecimento de empresa."""
+    status: str = Field(default="SUCCESS")
+    nome_pesquisado: str
+    dados_cadastrais: CadastralData
+    presenca_digital: DigitalPresence
+    perfil_mercado: MarketProfile
+    inteligencia_comercial: CommercialIntelligence
+    contatos_auditados: List[DecisionMakerProfile] = Field(
+        default_factory=list,
+        description="Dossiê das pessoas informadas pelo usuário ou decisores auditados",
+    )
+    auditoria_contatos: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Resumo técnico da auditoria de e-mails e telefones",
+    )
+    execution_time_seconds: Optional[float] = None
 
 
 class DecisionMakersQueryPlan(BaseModel):
@@ -148,7 +304,90 @@ class DecisionMakersRequest(BaseModel):
         default_factory=lambda: ["C-Level", "Diretor", "VP", "Head", "Gerente", "Founder"],
         description="Níveis de senioridade buscados",
     )
+    target_people: List[str] = Field(
+        default_factory=list,
+        description="Nomes específicos de pessoas a pesquisar prioritariamente",
+    )
+    people: List[str] = Field(
+        default_factory=list,
+        description="Alias para target_people",
+    )
+    provided_emails: List[str] = Field(
+        default_factory=list,
+        description="E-mails conhecidos para auxílio no mapeamento de decisores",
+    )
+    emails: List[str] = Field(
+        default_factory=list,
+        description="Alias para provided_emails",
+    )
+    provided_phones: List[str] = Field(
+        default_factory=list,
+        description="Telefones conhecidos para validação e associação",
+    )
+    phones: List[str] = Field(
+        default_factory=list,
+        description="Alias para provided_phones",
+    )
+    contacts: List[ContactInput] = Field(
+        default_factory=list,
+        description="Lista de contatos estruturados",
+    )
     max_results: int = Field(default=10, ge=1, le=25, description="Quantidade máxima de perfis a retornar")
+
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_aliases(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "company_name" not in data:
+                for alt in ["name", "company", "empresa", "nome"]:
+                    if alt in data and data[alt]:
+                        data["company_name"] = data[alt]
+                        break
+
+            # normalize people
+            peop = _normalize_string_list(data.get("target_people") or data.get("people"))
+            for alt in ["person", "person_name", "pessoa", "nome_pessoa"]:
+                if alt in data and data[alt]:
+                    peop.extend(_normalize_string_list(data[alt]))
+
+            # normalize emails
+            em_list = _normalize_string_list(data.get("provided_emails") or data.get("emails"))
+            for alt in ["email", "mail", "e-mail"]:
+                if alt in data and data[alt]:
+                    em_list.extend(_normalize_string_list(data[alt]))
+
+            # normalize phones
+            ph_list = _normalize_string_list(data.get("provided_phones") or data.get("phones"))
+            for alt in ["phone", "telefone", "celular", "whatsapp", "tel"]:
+                if alt in data and data[alt]:
+                    ph_list.extend(_normalize_string_list(data[alt]))
+
+            contacts_raw = data.get("contacts") or []
+            if isinstance(contacts_raw, list):
+                for c in contacts_raw:
+                    if isinstance(c, dict):
+                        c_name = c.get("nome") or c.get("name")
+                        c_email = c.get("email") or c.get("mail")
+                        c_ph = c.get("telefone") or c.get("phone")
+                        if c_name and c_name not in peop:
+                            peop.append(c_name)
+                        if c_email and c_email not in em_list:
+                            em_list.append(c_email)
+                        if c_ph and c_ph not in ph_list:
+                            ph_list.append(c_ph)
+
+            clean_people = list(dict.fromkeys(peop))
+            clean_emails = list(dict.fromkeys(em_list))
+            clean_phones = list(dict.fromkeys(ph_list))
+
+            data["target_people"] = clean_people
+            data["people"] = clean_people
+            data["provided_emails"] = clean_emails
+            data["emails"] = clean_emails
+            data["provided_phones"] = clean_phones
+            data["phones"] = clean_phones
+
+        return data
 
 
 class DecisionMakersResponse(BaseModel):
@@ -175,7 +414,7 @@ class FullCompanyEnrichmentResponse(BaseModel):
 # 3. Schemas for Single-Call Unified Enrichment (Google + LinkedIn)
 # ==============================================================================
 class QuickEnrichRequest(BaseModel):
-    """Requisição simplificada para enriquecimento completo (Google + LinkedIn)."""
+    """Requisição simplificada para enriquecimento completo (Google + LinkedIn + Contatos)."""
     name: str = Field(
         ...,
         min_length=1,
@@ -192,6 +431,22 @@ class QuickEnrichRequest(BaseModel):
         default=True,
         description="Se true, analisa o site oficial em profundidade",
     )
+    people: List[str] = Field(
+        default_factory=list,
+        description="Lista de pessoas/executivos da empresa a pesquisar e qualificar",
+    )
+    emails: List[str] = Field(
+        default_factory=list,
+        description="Lista de e-mails para validação SMTP e detecção de padrão da empresa",
+    )
+    phones: List[str] = Field(
+        default_factory=list,
+        description="Lista de telefones para higienização e validação de WhatsApp",
+    )
+    contacts: List[ContactInput] = Field(
+        default_factory=list,
+        description="Lista estruturada de contatos (nome, email, telefone, cargo)",
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -207,6 +462,44 @@ class QuickEnrichRequest(BaseModel):
                     if alt in data and data[alt]:
                         data["location"] = data[alt]
                         break
+
+            # normalize people
+            peop = _normalize_string_list(data.get("people"))
+            for alt in ["person", "person_name", "pessoa", "nome_pessoa", "target_people"]:
+                if alt in data and data[alt]:
+                    peop.extend(_normalize_string_list(data[alt]))
+
+            # normalize emails
+            em_list = _normalize_string_list(data.get("emails"))
+            for alt in ["email", "mail", "e-mail"]:
+                if alt in data and data[alt]:
+                    em_list.extend(_normalize_string_list(data[alt]))
+
+            # normalize phones
+            ph_list = _normalize_string_list(data.get("phones"))
+            for alt in ["phone", "telefone", "celular", "whatsapp", "tel"]:
+                if alt in data and data[alt]:
+                    ph_list.extend(_normalize_string_list(data[alt]))
+
+            # if contacts list passed, merge into lists
+            contacts_raw = data.get("contacts") or []
+            if isinstance(contacts_raw, list):
+                for c in contacts_raw:
+                    if isinstance(c, dict):
+                        c_name = c.get("nome") or c.get("name") or c.get("pessoa")
+                        c_mail = c.get("email") or c.get("mail")
+                        c_ph = c.get("telefone") or c.get("phone") or c.get("whatsapp")
+                        if c_name and c_name not in peop:
+                            peop.append(c_name)
+                        if c_mail and c_mail not in em_list:
+                            em_list.append(c_mail)
+                        if c_ph and c_ph not in ph_list:
+                            ph_list.append(c_ph)
+
+            data["people"] = list(dict.fromkeys(peop))
+            data["emails"] = list(dict.fromkeys(em_list))
+            data["phones"] = list(dict.fromkeys(ph_list))
+
         return data
 
 
@@ -260,6 +553,17 @@ class CommercialStrategyData(BaseModel):
     nivel_confianca: str
 
 
+class ContactAuditSummary(BaseModel):
+    """Resumo consolidado da auditoria técnica dos contatos fornecidos pelo usuário."""
+    total_emails_fornecidos: int = 0
+    emails_validos: List[str] = Field(default_factory=list)
+    padrao_corporativo_emails: Optional[str] = None
+    emails_auditados: List[Dict[str, Any]] = Field(default_factory=list)
+    total_telefones_fornecidos: int = 0
+    telefones_com_whatsapp: List[str] = Field(default_factory=list)
+    telefones_auditados: List[Dict[str, Any]] = Field(default_factory=list)
+
+
 class UnifiedEnrichmentResponse(BaseModel):
     """Resposta consolidada de enriquecimento com Google e LinkedIn."""
     status: str = Field(default="SUCCESS")
@@ -267,6 +571,14 @@ class UnifiedEnrichmentResponse(BaseModel):
     google: GoogleEnrichmentData
     linkedin: LinkedInEnrichmentData
     inteligencia_comercial: CommercialStrategyData
+    contatos_enriquecidos_usuario: List[DecisionMakerProfile] = Field(
+        default_factory=list,
+        description="Dossiê detalhado das pessoas informadas pelo usuário na requisição com cargos e contatos auditados",
+    )
+    auditoria_contatos: Union[ContactAuditSummary, Dict[str, Any]] = Field(
+        default_factory=dict,
+        description="Resumo da auditoria: e-mails testados por SMTP, padrão corporativo e status de WhatsApp",
+    )
     execution_time_seconds: Optional[float] = None
 
 

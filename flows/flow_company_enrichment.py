@@ -12,7 +12,7 @@ import logging
 import re
 import time
 import unicodedata
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import httpx
@@ -45,7 +45,14 @@ from integrations.receita import (
     extract_cnpjs_from_search_results,
     format_cnpj,
 )
-from integrations.email_verifier import find_valid_executive_email, filter_valid_emails, filter_valid_phones
+from integrations.email_verifier import (
+    find_valid_executive_email,
+    filter_valid_emails,
+    filter_valid_phones,
+    normalize_phone,
+    validate_email_syntax,
+    verify_email_smtp,
+)
 from scrapers.ai_extractor import ai_extractor
 from scrapers.google_scraper import GoogleSearchScraper
 
@@ -60,6 +67,160 @@ DIRECTORY_DOMAINS = {
     "reclameaqui.com.br", "glassdoor.com", "glassdoor.com.br", "infojobs.com.br",
     "jusbrasil.com.br", "wikipedia.org", "google.com", "bing.com", "yahoo.com"
 }
+
+
+def _normalize_name_tokens(name: str) -> List[str]:
+    """Extracts lowercase ascii tokens from a person's name ignoring common prepositions."""
+    clean = unicodedata.normalize("NFKD", name or "").encode("ascii", "ignore").decode("utf-8").lower()
+    return [p for p in re.sub(r"[^a-z\s]", "", clean).split() if len(p) > 1 and p not in ("de", "da", "do", "dos", "das", "e")]
+
+
+def _match_person_name(name1: str, name2: str) -> bool:
+    """Fuzzy/token match between two names (e.g. 'Carlos Netto' vs 'CARLOS ALBERTO NETTO')."""
+    tokens1 = _normalize_name_tokens(name1)
+    tokens2 = _normalize_name_tokens(name2)
+    if not tokens1 or not tokens2:
+        return False
+    if tokens1 == tokens2:
+        return True
+    if len(tokens1) >= 2 and len(tokens2) >= 2:
+        if tokens1[0] == tokens2[0] and tokens1[-1] == tokens2[-1]:
+            return True
+    set1, set2 = set(tokens1), set(tokens2)
+    if set1.issubset(set2) or set2.issubset(set1):
+        return True
+    return False
+
+
+def _find_qsa_match(name: str, qsa_members: Optional[List[Dict[str, Any]]]) -> Optional[Dict[str, Any]]:
+    """Checks if a given person's name matches any corporate administrator in official QSA."""
+    if not qsa_members or not name:
+        return None
+    for q in qsa_members:
+        q_name = q.get("nome", "")
+        if _match_person_name(name, q_name):
+            return q
+    return None
+
+
+def _safe_check_whatsapp(phone: str) -> Optional[bool]:
+    """Safely checks if a phone number has an active WhatsApp account without throwing."""
+    from integrations.evolution import EvolutionClient, format_brazilian_phone
+    try:
+        norm = format_brazilian_phone(phone)
+        evo = EvolutionClient()
+        import asyncio
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(lambda: asyncio.run(evo.check_whatsapp_number(norm))).result(timeout=4)
+        else:
+            return asyncio.run(evo.check_whatsapp_number(norm))
+    except Exception as e:
+        logger.debug("WhatsApp verification skipped or failed for %s: %s", phone, e)
+        return None
+
+
+def audit_emails_batch(emails: List[str], max_verify: int = 8) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """
+    Validates a list of corporate emails via syntax and active SMTP handshake.
+    Detects corporate email pattern by consensus.
+    """
+    audit_results = []
+    seen = set()
+
+    for em in emails:
+        em_clean = em.strip().lower()
+        if not em_clean or em_clean in seen:
+            continue
+        seen.add(em_clean)
+
+        if not validate_email_syntax(em_clean):
+            audit_results.append({
+                "email": em_clean,
+                "valido": False,
+                "status": "SINTAXE_INVALIDA",
+                "detalhe": "Formato de e-mail inválido conforme especificação RFC.",
+            })
+            continue
+
+        if len(audit_results) < max_verify:
+            try:
+                ver = verify_email_smtp(em_clean)
+                if isinstance(ver, dict):
+                    v_val = ver.get("valido")
+                    v_stat = ver.get("status")
+                    v_catch = ver.get("is_catch_all", False)
+                    v_det = ver.get("detalhe")
+                else:
+                    v_val = bool(ver)
+                    v_stat = "VALIDADO_SMTP" if ver else "INVALIDO"
+                    v_catch = False
+                    v_det = "Verificação SMTP concluída"
+                audit_results.append({
+                    "email": em_clean,
+                    "valido": v_val,
+                    "status": v_stat,
+                    "is_catch_all": v_catch,
+                    "detalhe": v_det,
+                })
+            except Exception as e:
+                audit_results.append({
+                    "email": em_clean,
+                    "valido": None,
+                    "status": "ERRO_CONEXAO",
+                    "detalhe": str(e),
+                })
+        else:
+            audit_results.append({
+                "email": em_clean,
+                "valido": None,
+                "status": "NAO_VERIFICADO",
+                "detalhe": "Limite de verificações simultâneas atingido.",
+            })
+
+    # Pattern consensus detection
+    detected_pattern = None
+    for item in audit_results:
+        em = item["email"]
+        if "@" in em and item.get("valido") is not False:
+            user_part, domain_part = em.split("@", 1)
+            if not any(p in domain_part for p in ["gmail.com", "hotmail.com", "yahoo.com", "outlook.com", "bol.com.br"]):
+                if "." in user_part:
+                    detected_pattern = f"{{nome}}.{{sobrenome}}@{domain_part}"
+                    break
+                elif "_" in user_part:
+                    detected_pattern = f"{{nome}}_{{sobrenome}}@{domain_part}"
+                    break
+                elif len(user_part) > 3:
+                    detected_pattern = f"{{nome}}@{domain_part}"
+                    break
+
+    return audit_results, detected_pattern
+
+
+def audit_phones_batch(phones: List[str]) -> List[Dict[str, Any]]:
+    """Normalizes Brazilian phones and checks for active WhatsApp account."""
+    results = []
+    seen = set()
+    for ph in phones:
+        norm = normalize_phone(ph)
+        key = norm or ph.strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        wpp_status = _safe_check_whatsapp(key) if norm else None
+        results.append({
+            "telefone_original": ph,
+            "telefone_formatado": norm or ph,
+            "valido": bool(norm),
+            "whatsapp_ativo": wpp_status,
+        })
+    return results
 
 
 QUERY_PLANNER_SYSTEM_INSTRUCTION = """
@@ -167,10 +328,32 @@ def enrich_company_pipeline(
     # --------------------------------------------------------------------------
     # Stage 1: Query Refinement with Gemini
     # --------------------------------------------------------------------------
+    # Extract corporate domain from emails if provided
+    known_domains = []
+    for em in request.emails:
+        if "@" in em:
+            d = em.strip().lower().split("@")[-1]
+            if d and not any(ign in d for ign in ["gmail.com", "hotmail.com", "outlook.com", "yahoo.com", "bol.com.br", "uol.com.br"]):
+                if d not in known_domains:
+                    known_domains.append(d)
+
+    extra_hints = []
+    if request.location_hint:
+        extra_hints.append(f"Dica de Localização: {request.location_hint}")
+    if request.segment_hint:
+        extra_hints.append(f"Dica de Segmento/Nicho: {request.segment_hint}")
+    if known_domains:
+        extra_hints.append(f"Domínio oficial verificado nos e-mails: {known_domains[0]}")
+    if request.people:
+        extra_hints.append(f"Pessoas/Executivos conhecidos: {', '.join(request.people)}")
+    if request.phones:
+        extra_hints.append(f"Telefones informados: {', '.join(request.phones)}")
+
+    hints_str = "\n".join(extra_hints) if extra_hints else "Nenhuma dica adicional informada."
+
     planner_prompt = (
         f"Empresa: {company_name}\n"
-        f"Dica de Localização: {request.location_hint or 'Não informada'}\n"
-        f"Dica de Segmento/Nicho: {request.segment_hint or 'Não informada'}\n\n"
+        f"{hints_str}\n\n"
         "Gere as melhores queries para encontrar site oficial, CNPJ/Razão Social e LinkedIn."
     )
 
@@ -186,8 +369,9 @@ def enrich_company_pipeline(
         logger.warning("Query planner fallback used (%s)", e_plan)
         loc_clause = f" {request.location_hint}" if request.location_hint else ""
         br_clause = " Brasil" if "brasil" not in company_name.lower() else ""
+        primary_fallback = f'site:{known_domains[0]} OR "{company_name}" site oficial' if known_domains else f'{company_name}{loc_clause} site oficial'
         plan = SearchRefinementPlan(
-            primary_query=f'{company_name}{loc_clause} site oficial',
+            primary_query=primary_fallback,
             fiscal_query=f'{company_name}{br_clause} CNPJ Razao Social',
             social_query=f'{company_name} site:linkedin.com/company',
             assumptions_and_context="Busca padrão baseada no nome informado.",
@@ -257,6 +441,9 @@ def enrich_company_pipeline(
         if _is_official_domain_candidate(url):
             official_website_url = url
             break
+
+    if not official_website_url and known_domains:
+        official_website_url = f"https://www.{known_domains[0]}"
 
     site_extracted_content = ""
     site_emails = set()
@@ -392,8 +579,9 @@ def enrich_company_pipeline(
                 enriched_response.presenca_digital.emails.append(em)
         enriched_response.inteligencia_comercial.nivel_confianca = "ALTA"
 
-    # Merge and deduplicate site phones (normalized)
-    for ph in filter_valid_phones(list(site_phones)):
+    # Merge and deduplicate user-provided phones and site phones (normalized)
+    candidate_phones = list(site_phones) + list(request.phones)
+    for ph in filter_valid_phones(candidate_phones):
         if ph not in enriched_response.presenca_digital.telefones:
             enriched_response.presenca_digital.telefones.append(ph)
 
@@ -402,13 +590,54 @@ def enrich_company_pipeline(
         enriched_response.presenca_digital.telefones
     )
 
-    # Collect all candidate emails and SMTP-validate them, dropping confirmed invalid ones
+    # Collect all candidate emails (including user-provided emails) and SMTP-validate them
     all_candidate_emails = list(dict.fromkeys(
-        enriched_response.presenca_digital.emails + list(site_emails)
+        enriched_response.presenca_digital.emails + list(site_emails) + list(request.emails)
     ))
     logger.info("Validating %d candidate emails for '%s' via SMTP filter", len(all_candidate_emails), company_name)
     enriched_response.presenca_digital.emails = filter_valid_emails(all_candidate_emails, max_to_verify=8)
     logger.info("After SMTP filter: %d valid emails retained", len(enriched_response.presenca_digital.emails))
+
+    # Build contatos_auditados from request.people
+    user_contatos_auditados = []
+    qsa_list = cnpj_registry_data.get("qsa", []) if cnpj_registry_data else []
+    for p_name in request.people:
+        qsa_match = _find_qsa_match(p_name, qsa_list)
+        # Match email if provided
+        p_email = None
+        for em in request.emails:
+            clean_em = em.lower()
+            tokens = _normalize_name_tokens(p_name)
+            if tokens and any(t in clean_em for t in tokens):
+                p_email = em
+                break
+
+        p_phone = request.phones[0] if request.phones else None
+        p_wpp = _safe_check_whatsapp(p_phone) if p_phone else None
+
+        user_contatos_auditados.append(DecisionMakerProfile(
+            nome=p_name,
+            cargo=qsa_match.get("cargo", "Liderança / Gestão") if qsa_match else "Liderança / Gestão",
+            nivel_hierarquico="C-Level / Sócio-Fundador" if qsa_match else "Gerência / Head",
+            departamento="Diretoria Geral" if qsa_match else "Geral",
+            origem_dado="ENVIADO_PELO_USUARIO",
+            pertence_ao_qsa=bool(qsa_match),
+            cargo_qsa=qsa_match.get("cargo") if qsa_match else None,
+            email_provavel=p_email,
+            telefone_contato=p_phone,
+            whatsapp_valido=p_wpp,
+            vinculo_atual_confirmado=True,
+            resumo_experiencia=f"Contato informado na requisição para a empresa {company_name}.",
+        ))
+    audited_emails, detected_pattern = audit_emails_batch(all_candidate_emails, max_verify=8)
+    audited_phones = audit_phones_batch(request.phones + enriched_response.presenca_digital.telefones)
+
+    enriched_response.contatos_auditados = user_contatos_auditados
+    enriched_response.auditoria_contatos = {
+        "emails_auditados": audited_emails,
+        "telefones_auditados": audited_phones,
+        "padrao_corporativo": detected_pattern,
+    }
 
     # Attach metadata
     enriched_response.nome_pesquisado = company_name
@@ -465,6 +694,9 @@ Diretrizes obrigatórias:
 6. Enriquecimento de Contato e E-mail Corporativo:
    - Com base no domínio oficial da empresa ou exemplos de e-mails corporativos identificados nos snippets, estime o 'email_provavel' de cada decisor (sem acentos e em minúsculas) e indique a fórmula no campo 'padrao_email' (ex: '{primeiro_nome}.{sobrenome}@{dominio}').
    - Se houver telefone da matriz/sede ou comercial disponível nas evidências, preencha 'telefone_contato'.
+7. Pessoas Informadas na Requisição (Prioridade Máxima):
+   - Se houver seção de 'PESSOAS ALVO PRIORITÁRIAS FORNECIDAS PELO USUÁRIO', você DEVE obrigatoriamente incluir cada uma delas na lista 'decisores'.
+   - Localize o cargo, departamento e perfil no LinkedIn de cada uma a partir das evidências. Se não houver menção explícita no snippet, preserve o nome e infira o cargo mais provável ou atribua 'Gestão / Liderança' com vinculo_atual_confirmado=true.
 """
 
 
@@ -510,9 +742,32 @@ def find_decision_makers_pipeline(
 
     query_news = f'"{company_name}"{loc_suffix} ("anuncia" OR "nomeia" OR "novo CEO" OR "novo diretor" OR "CHRO" OR "contrata")'
 
-    # 2. Public Google Search execution in parallel (C-Level, Directors, and Press/News)
+    # 2. Public Google Search execution in parallel (C-Level, Directors, News, and Targeted People)
     collected_results = []
     seen_urls = set()
+
+    # 2.1 Targeted searches for user-provided people
+    if request.target_people:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(request.target_people), 4)) as p_exec:
+            fut_map = {
+                p_exec.submit(
+                    execute_google_search,
+                    f'(site:br.linkedin.com/in/ OR site:linkedin.com/in/) "{p}" "{company_name}"',
+                    3
+                ): p
+                for p in request.target_people[:6]
+            }
+            for fut in concurrent.futures.as_completed(fut_map):
+                p_name = fut_map[fut]
+                try:
+                    p_res = fut.result()
+                    for item in p_res.get("organic_results", []):
+                        u = item.get("url", "")
+                        if "linkedin.com/in/" in u and u not in seen_urls:
+                            seen_urls.add(u)
+                            collected_results.insert(0, item)
+                except Exception as e_p:
+                    logger.debug("Target person search error for %s: %s", p_name, e_p)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         f_c = executor.submit(execute_google_search, plan.query_c_level, request.max_results)
@@ -552,6 +807,15 @@ def find_decision_makers_pipeline(
     # 3. AI synthesis of structured decision makers
     evidence_lines = []
 
+    target_people_text = ""
+    if request.target_people:
+        target_people_text = (
+            "\n=== PESSOAS ALVO PRIORITÁRIAS FORNECIDAS PELO USUÁRIO (OBRIGATÓRIO INCLUIR NA LISTA DE DECISORES) ===\n"
+            + "\n".join([f"- {p}" for p in request.target_people])
+            + "\n"
+        )
+        evidence_lines.append(target_people_text)
+
     qsa_text = ""
     if not qsa_members:
         try:
@@ -589,6 +853,8 @@ def find_decision_makers_pipeline(
     EMPRESA ALVO: "{company_name}"
     Domínio/Website: {request.website_or_domain or 'N/A'}
     Departamentos de interesse: {', '.join(request.target_departments or [])}
+
+    {target_people_text}
 
     {qsa_text}
 
@@ -688,6 +954,86 @@ def find_decision_makers_pipeline(
             dm.email_provavel = None
             dm.padrao_email = None
 
+    # Reconcile user-provided target_people and official QSA members
+    for p_name in request.target_people:
+        matched_dm = None
+        for dm in response.decisores:
+            if _match_person_name(p_name, dm.nome):
+                matched_dm = dm
+                break
+
+        q_match = _find_qsa_match(p_name, qsa_members)
+        if matched_dm:
+            matched_dm.origem_dado = "ENVIADO_PELO_USUARIO"
+            if q_match:
+                matched_dm.pertence_ao_qsa = True
+                matched_dm.cargo_qsa = q_match.get("cargo")
+                if matched_dm.nivel_hierarquico not in ("C-Level / Sócio-Fundador", "Diretoria"):
+                    matched_dm.nivel_hierarquico = "C-Level / Sócio-Fundador"
+        else:
+            p_phone = request.provided_phones[0] if request.provided_phones else None
+            p_wpp = _safe_check_whatsapp(p_phone) if p_phone else None
+            injected_dm = DecisionMakerProfile(
+                nome=p_name,
+                cargo=q_match.get("cargo", "Liderança / Gestão") if q_match else "Liderança / Gestão",
+                nivel_hierarquico="C-Level / Sócio-Fundador" if q_match else "Gerência / Head",
+                departamento="Diretoria Geral" if q_match else "Geral",
+                origem_dado="ENVIADO_PELO_USUARIO",
+                pertence_ao_qsa=bool(q_match),
+                cargo_qsa=q_match.get("cargo") if q_match else None,
+                telefone_contato=p_phone,
+                whatsapp_valido=p_wpp,
+                vinculo_atual_confirmado=True,
+                resumo_experiencia=f"Contato informado na requisição de enriquecimento da empresa {company_name}.",
+            )
+            response.decisores.insert(0, injected_dm)
+
+    # Check QSA status for all other decisores
+    for dm in response.decisores:
+        if not dm.pertence_ao_qsa:
+            q_match = _find_qsa_match(dm.nome, qsa_members)
+            if q_match:
+                dm.pertence_ao_qsa = True
+                dm.cargo_qsa = q_match.get("cargo")
+                if dm.origem_dado == "LINKEDIN_OSINT":
+                    dm.origem_dado = "QSA_RECEITA_FEDERAL"
+
+    # Match provided emails and phones to decisores if provided
+    for dm in response.decisores:
+        if request.provided_emails:
+            for prov_em in request.provided_emails:
+                tokens = _normalize_name_tokens(dm.nome)
+                if tokens and any(t in prov_em.lower() for t in tokens):
+                    dm.email_provavel = prov_em
+                    dm.padrao_email = f"{{nome}}@{prov_em.split('@')[-1]}"
+                    try:
+                        em_ver = verify_email_smtp(prov_em)
+                        if isinstance(em_ver, dict):
+                            dm.status_email = em_ver.get("status", "VALIDADO_SMTP")
+                        elif isinstance(em_ver, bool):
+                            dm.status_email = "VALIDADO_SMTP" if em_ver else "INVALIDO"
+                    except Exception:
+                        pass
+                    break
+
+        if request.provided_phones and not dm.telefone_contato:
+            dm.telefone_contato = request.provided_phones[0]
+            dm.whatsapp_valido = _safe_check_whatsapp(dm.telefone_contato)
+
+        # Synchronize associated contact lists
+        if dm.email_provavel and dm.email_provavel not in dm.emails_associados:
+            dm.emails_associados.append(dm.email_provavel)
+        if dm.telefone_contato and dm.telefone_contato not in dm.telefones_associados:
+            dm.telefones_associados.append(dm.telefone_contato)
+
+    # Sort decisores: user-provided first, then QSA executives, then rest
+    response.decisores.sort(
+        key=lambda dm: (
+            0 if dm.origem_dado == "ENVIADO_PELO_USUARIO" else (1 if dm.pertence_ao_qsa else 2),
+            0 if dm.nivel_hierarquico == "C-Level / Sócio-Fundador" else (1 if dm.nivel_hierarquico == "Diretoria" else 2)
+        )
+    )
+
     response.total_encontrados = len(response.decisores)
     elapsed = round(time.time() - start_time, 2)
     response.execution_time_seconds = elapsed
@@ -713,6 +1059,9 @@ def enrich_full_company_pipeline(
     dm_request = DecisionMakersRequest(
         company_name=comp_res.dados_cadastrais.nome_fantasia or comp_res.nome_pesquisado,
         website_or_domain=comp_res.presenca_digital.website_oficial,
+        target_people=request.people,
+        provided_emails=request.emails,
+        provided_phones=request.phones,
         max_results=10,
     )
     dm_res = find_decision_makers_pipeline(
@@ -863,6 +1212,10 @@ def enrich_unified_pipeline(
         company_name=request.name,
         location_hint=request.location,
         deep_scrape_website=request.deep_scrape,
+        people=request.people,
+        emails=request.emails,
+        phones=request.phones,
+        contacts=request.contacts,
     )
 
     # 1. Company Profile Enrichment
@@ -881,11 +1234,14 @@ def enrich_unified_pipeline(
     if linkedin_company.url and not comp_res.presenca_digital.linkedin_url:
         comp_res.presenca_digital.linkedin_url = linkedin_company.url
 
-    # 3. Discover decision makers using commercial brand name and official QSA
+    # 3. Discover decision makers using commercial brand name, target people, and official QSA
     target_company = request.name or comp_res.dados_cadastrais.nome_fantasia or comp_res.nome_pesquisado
     dm_req = DecisionMakersRequest(
         company_name=target_company,
         website_or_domain=comp_res.presenca_digital.website_oficial,
+        target_people=request.people,
+        provided_emails=request.emails,
+        provided_phones=request.phones,
         max_results=10,
     )
     dm_res = find_decision_makers_pipeline(
@@ -893,6 +1249,27 @@ def enrich_unified_pipeline(
         gemini_client=gemini,
         qsa_members=comp_res.dados_cadastrais.qsa,
     )
+
+    # 4. Batch contact auditing for provided and discovered emails and phones
+    all_emails_to_audit = list(dict.fromkeys(request.emails + comp_res.presenca_digital.emails))
+    emails_audit_data, detected_pattern = audit_emails_batch(all_emails_to_audit)
+
+    all_phones_to_audit = list(dict.fromkeys(request.phones + comp_res.presenca_digital.telefones))
+    phones_audit_data = audit_phones_batch(all_phones_to_audit)
+
+    user_enriched_profiles = [
+        dm for dm in dm_res.decisores
+        if dm.origem_dado == "ENVIADO_PELO_USUARIO" or any(_match_person_name(dm.nome, p) for p in request.people)
+    ]
+
+    auditoria_contatos = {
+        "padrao_email_detectado": detected_pattern,
+        "emails_auditados": emails_audit_data,
+        "telefones_auditados": phones_audit_data,
+        "total_pessoas_enviadas": len(request.people),
+        "total_emails_enviados": len(request.emails),
+        "total_telefones_enviados": len(request.phones),
+    }
 
     elapsed = round(time.time() - start_time, 2)
 
@@ -927,6 +1304,8 @@ def enrich_unified_pipeline(
             melhor_ponto_de_contato=dm_res.analise_estrategica_contato,
             nivel_confianca=comp_res.inteligencia_comercial.nivel_confianca,
         ),
+        contatos_enriquecidos_usuario=user_enriched_profiles,
+        auditoria_contatos=auditoria_contatos,
         execution_time_seconds=elapsed,
     )
 

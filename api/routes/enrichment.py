@@ -59,15 +59,21 @@ def enrich_unified_get(
     name: str = Query(..., min_length=1, max_length=200, description="Nome da empresa a enriquecer"),
     location: Optional[str] = Query(None, description="Cidade ou Estado para desambiguação"),
     deep_scrape: bool = Query(True, description="Análise profunda do site oficial"),
+    people: Optional[str] = Query(None, description="Pessoas ou executivos separados por vírgula"),
+    emails: Optional[str] = Query(None, description="E-mails corporativos ou pessoais separados por vírgula"),
+    phones: Optional[str] = Query(None, description="Telefones separados por vírgula"),
 ):
     """
     Versão GET do enriquecimento unificado (Google + LinkedIn) via query string.
-    Exemplo: /api/v1/enrich?name=Matera&location=Campinas
+    Exemplo: /api/v1/enrich?name=Matera&location=Campinas&people=Carlos+Netto&emails=contato@matera.com
     """
     payload = QuickEnrichRequest(
         name=name,
         location=location,
         deep_scrape=deep_scrape,
+        people=people,
+        emails=emails,
+        phones=phones,
     )
     return enrich_unified_post(payload)
 
@@ -92,6 +98,9 @@ def enrich_company_get(
     location: Optional[str] = Query(None, description="Dica de localização (cidade ou estado)"),
     segment: Optional[str] = Query(None, description="Dica de segmento de atuação"),
     deep_scrape: bool = Query(True, description="Baixar conteúdo da página oficial identificada"),
+    people: Optional[str] = Query(None, description="Pessoas ou executivos separados por vírgula"),
+    emails: Optional[str] = Query(None, description="E-mails corporativos separados por vírgula"),
+    phones: Optional[str] = Query(None, description="Telefones separados por vírgula"),
 ):
     """
     Convenience GET endpoint to enrich a company name via query parameters.
@@ -101,6 +110,9 @@ def enrich_company_get(
         location_hint=location,
         segment_hint=segment,
         deep_scrape_website=deep_scrape,
+        people=people,
+        emails=emails,
+        phones=phones,
     )
     return enrich_company_post(payload)
 
@@ -142,14 +154,23 @@ def find_decision_makers_post(payload: DecisionMakersRequest):
 def find_decision_makers_get(
     name: str = Query(..., min_length=1, max_length=200, description="Nome da empresa"),
     domain: Optional[str] = Query(None, description="Domínio oficial da empresa (ex: matera.com)"),
+    people: Optional[str] = Query(None, description="Nomes específicos de pessoas a pesquisar prioritariamente separados por vírgula"),
+    emails: Optional[str] = Query(None, description="E-mails corporativos conhecidos separados por vírgula"),
+    phones: Optional[str] = Query(None, description="Telefones conhecidos separados por vírgula"),
     max_results: int = Query(10, ge=1, le=25, description="Quantidade máxima de perfis a retornar"),
 ):
     """
     Convenience GET endpoint to discover decision makers via query string.
     """
+    target_peop = [p.strip() for p in people.split(",") if p.strip()] if people else []
+    prov_emails = [e.strip() for e in emails.split(",") if e.strip()] if emails else []
+    prov_phones = [ph.strip() for ph in phones.split(",") if ph.strip()] if phones else []
     payload = DecisionMakersRequest(
         company_name=name,
         website_or_domain=domain,
+        target_people=target_peop,
+        provided_emails=prov_emails,
+        provided_phones=prov_phones,
         max_results=max_results,
     )
     return find_decision_makers_post(payload)

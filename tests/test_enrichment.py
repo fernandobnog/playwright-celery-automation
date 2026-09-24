@@ -94,12 +94,20 @@ def test_enrich_company_pipeline_mocked():
         deep_scrape_website=False,
     )
 
-    with patch("flows.flow_company_enrichment.GoogleSearchScraper") as MockScraper:
-        mock_instance = MagicMock()
-        mock_instance.__enter__.return_value = mock_instance
-        mock_instance.search.return_value = mock_search_results
-        MockScraper.return_value = mock_instance
+    mock_cnpj_info = {
+        "cnpj": "58.749.123/0001-00",
+        "razao_social": "Matera Informática S.A.",
+        "nome_fantasia": "Matera",
+        "situacao_cadastral": "ATIVA",
+        "sede": "Campinas, SP",
+        "telefones": ["(19) 3707-1200"],
+        "qsa": [{"nome": "Carlos Netto", "cargo": "Presidente"}],
+        "fonte": "Receita Federal",
+    }
 
+    with patch("flows.flow_company_enrichment.execute_google_search", return_value=mock_search_results), \
+         patch("flows.flow_company_enrichment.consult_cnpj_public_api", return_value=mock_cnpj_info), \
+         patch("flows.flow_company_enrichment.verify_email_smtp", return_value=True):
         result = enrich_company_pipeline(req, gemini_client=mock_gemini)
 
     assert result.status == "SUCCESS"
@@ -227,12 +235,10 @@ def test_find_decision_makers_pipeline_mocked():
 
     req = DecisionMakersRequest(company_name="Matera", max_results=5)
 
-    with patch("flows.flow_company_enrichment.GoogleSearchScraper") as MockScraper:
-        mock_inst = MagicMock()
-        mock_inst.__enter__.return_value = mock_inst
-        mock_inst.search.return_value = mock_search
-        MockScraper.return_value = mock_inst
-
+    with patch("flows.flow_company_enrichment.execute_google_search", return_value=mock_search), \
+         patch("flows.flow_company_enrichment.consult_cnpj_public_api", return_value=None), \
+         patch("flows.flow_company_enrichment.verify_email_smtp", return_value=False), \
+         patch("flows.flow_company_enrichment._safe_check_whatsapp", return_value=None):
         result = find_decision_makers_pipeline(req, gemini_client=mock_gemini)
 
     assert result.status == "SUCCESS"
@@ -457,16 +463,290 @@ def test_extract_linkedin_company_pipeline_mocked():
         ]
     }
 
-    with patch("flows.flow_company_enrichment.GoogleSearchScraper") as MockScraper:
-        mock_inst = MagicMock()
-        mock_inst.__enter__.return_value = mock_inst
-        mock_inst.search.return_value = mock_search
-        MockScraper.return_value = mock_inst
-
+    with patch("flows.flow_company_enrichment.execute_google_search", return_value=mock_search):
         result = extract_linkedin_company_pipeline("Matera", gemini_client=mock_gemini)
 
     assert result.nome == "Matera"
     assert result.url == "https://br.linkedin.com/company/matera"
     assert result.faixa_funcionarios == "501-1.000 funcionários"
+
+
+def test_enrichment_schemas_with_people_emails_phones_and_aliases():
+    """Validates that request schemas parse multiple people, emails, phones, contacts, and singular aliases."""
+    from api.schemas.enrichment import ContactInput, DecisionMakersRequest, QuickEnrichRequest
+
+    # 1. CompanyEnrichmentRequest with plural lists and structured contacts
+    req1 = CompanyEnrichmentRequest(
+        company_name="Matera",
+        people=["Carlos Netto", "Roberto Matos"],
+        emails=["carlos@matera.com", "contato@matera.com"],
+        phones=["1937071200", "19999999999"],
+        contacts=[{"nome": "Carlos Netto", "email": "carlos@matera.com", "telefone": "19999999999", "cargo": "CEO"}],
+    )
+    assert req1.company_name == "Matera"
+    assert len(req1.people) == 2
+    assert "carlos@matera.com" in req1.emails
+    assert len(req1.phones) == 2
+    assert len(req1.contacts) == 1
+    assert req1.contacts[0].nome == "Carlos Netto"
+
+    # 2. CompanyEnrichmentRequest with singular aliases and comma-separated strings
+    req2 = CompanyEnrichmentRequest(
+        name="Matera",
+        person="Carlos Netto, Roberto Matos",
+        email="carlos@matera.com, roberto@matera.com",
+        phone="1937071200",
+    )
+    assert req2.company_name == "Matera"
+    assert len(req2.people) == 2
+    assert "Carlos Netto" in req2.people
+    assert "Roberto Matos" in req2.people
+    assert len(req2.emails) == 2
+    assert len(req2.phones) == 1
+
+    # 3. DecisionMakersRequest
+    req3 = DecisionMakersRequest(
+        company="Matera",
+        people=["Carlos Netto"],
+        email="carlos@matera.com",
+        phones=["(19) 3707-1200"],
+    )
+    assert req3.company_name == "Matera"
+    assert req3.people == ["Carlos Netto"]
+    assert req3.emails == ["carlos@matera.com"]
+    assert len(req3.phones) == 1
+
+    # 4. QuickEnrichRequest
+    req4 = QuickEnrichRequest(
+        empresa="Matera",
+        people="Carlos Netto, Roberto Matos",
+        emails="carlos@matera.com",
+        phones="19999999999",
+    )
+    assert req4.name == "Matera"
+    assert len(req4.people) == 2
+    assert len(req4.emails) == 1
+
+
+def test_enrich_company_pipeline_with_contacts_audit():
+    """Validates that enrich_company_pipeline audits provided emails and phones."""
+    mock_gemini = MagicMock()
+    mock_plan = SearchRefinementPlan(
+        primary_query='"Matera" site oficial',
+        fiscal_query='"Matera" CNPJ',
+        social_query='"Matera" site:linkedin.com/company',
+        assumptions_and_context="Empresa de software bancário.",
+    )
+    mock_response = CompanyEnrichmentResponse(
+        status="SUCCESS",
+        nome_pesquisado="Matera",
+        dados_cadastrais=CadastralData(
+            razao_social="Matera Informática S.A.",
+            nome_fantasia="Matera",
+            cnpj="58.749.123/0001-00",
+        ),
+        presenca_digital=DigitalPresence(
+            website_oficial="https://www.matera.com",
+            telefones=[],
+            emails=[],
+        ),
+        perfil_mercado=MarketProfile(
+            setor_atuacao="TI",
+            porte_estimado="Grande",
+            descricao_negocio="Core banking",
+        ),
+        inteligencia_comercial=CommercialIntelligence(
+            sugestao_pitch_vendas="Pitch",
+            nivel_confianca="ALTA",
+        ),
+    )
+    mock_gemini.generate_structured.side_effect = [mock_plan, mock_response]
+
+    req = CompanyEnrichmentRequest(
+        company_name="Matera",
+        emails=["contato@matera.com", "invalido@@"],
+        phones=["1937071200"],
+        deep_scrape_website=False,
+    )
+
+    with patch("flows.flow_company_enrichment.execute_google_search", return_value={"organic_results": []}), \
+         patch("flows.flow_company_enrichment.consult_cnpj_public_api", return_value=None), \
+         patch("flows.flow_company_enrichment.verify_email_smtp", return_value=True), \
+         patch("flows.flow_company_enrichment._safe_check_whatsapp", return_value=True):
+        result = enrich_company_pipeline(req, gemini_client=mock_gemini)
+
+    assert result.status == "SUCCESS"
+    assert result.auditoria_contatos is not None
+    assert len(result.auditoria_contatos["emails_auditados"]) == 2
+    valid_email = next(e for e in result.auditoria_contatos["emails_auditados"] if e["email"] == "contato@matera.com")
+    assert valid_email["valido"] is True
+    assert valid_email["status"] == "VALIDADO_SMTP"
+    invalid_email = next(e for e in result.auditoria_contatos["emails_auditados"] if "invalido" in e["email"])
+    assert invalid_email["valido"] is False
+    assert invalid_email["status"] == "SINTAXE_INVALIDA"
+    valid_phone = next(p for p in result.auditoria_contatos["telefones_auditados"] if p["telefone_original"] == "1937071200")
+    assert valid_phone["valido"] is True
+    assert valid_phone["whatsapp_ativo"] is True
+
+
+def test_find_decision_makers_pipeline_with_target_people_and_qsa():
+    """Validates find_decision_makers_pipeline cross-referencing target people with Receita Federal QSA."""
+    from api.schemas.enrichment import DecisionMakerProfile, DecisionMakersQueryPlan, DecisionMakersRequest, DecisionMakersResponse
+    from flows.flow_company_enrichment import find_decision_makers_pipeline
+
+    mock_gemini = MagicMock()
+    mock_plan = DecisionMakersQueryPlan(
+        query_c_level='site:linkedin.com/in/ "Matera" CEO',
+        query_directors_heads='site:linkedin.com/in/ "Matera" Diretor',
+    )
+    mock_resp = DecisionMakersResponse(
+        status="SUCCESS",
+        company_name="Matera",
+        total_encontrados=1,
+        decisores=[
+            DecisionMakerProfile(
+                nome="Carlos Netto",
+                cargo="CEO & Founder",
+                nivel_hierarquico="C-Level / Sócio-Fundador",
+                departamento="Diretoria Geral",
+                linkedin_url="https://br.linkedin.com/in/carlosnetto",
+                vinculo_atual_confirmado=True,
+            )
+        ],
+        analise_estrategica_contato="Abordar Carlos Netto.",
+    )
+    mock_gemini.generate_structured.side_effect = [mock_plan, mock_resp]
+
+    mock_qsa_data = {
+        "cnpj": "58.749.123/0001-00",
+        "razao_social": "Matera Informática S.A.",
+        "qsa": [
+            {"nome": "Carlos Netto", "cargo": "Presidente / Sócio Administrador"},
+            {"nome": "Roberto Matos", "cargo": "Diretor"},
+        ],
+    }
+
+    req = DecisionMakersRequest(
+        company_name="Matera",
+        people=["Carlos Netto", "Novo Contato Injetado"],
+        emails=["carlos@matera.com"],
+        phones=["19999998888"],
+    )
+
+    with patch("flows.flow_company_enrichment.execute_google_search", return_value={"organic_results": []}), \
+         patch("flows.flow_company_enrichment.find_valid_executive_email", return_value=None), \
+         patch("flows.flow_company_enrichment.consult_cnpj_public_api", return_value=mock_qsa_data), \
+         patch("flows.flow_company_enrichment.verify_email_smtp", return_value=True), \
+         patch("flows.flow_company_enrichment._safe_check_whatsapp", return_value=True):
+        result = find_decision_makers_pipeline(req, gemini_client=mock_gemini, qsa_members=mock_qsa_data["qsa"])
+
+    assert result.status == "SUCCESS"
+    assert result.total_encontrados >= 2
+    carlos = next(d for d in result.decisores if "Carlos" in d.nome)
+    assert carlos.pertence_ao_qsa is True
+    assert carlos.cargo_qsa == "Presidente / Sócio Administrador"
+    assert "carlos@matera.com" in carlos.emails_associados or carlos.email_provavel == "carlos@matera.com"
+    assert carlos.whatsapp_valido is True
+
+    injetado = next(d for d in result.decisores if "Novo Contato" in d.nome)
+    assert injetado.origem_dado == "ENVIADO_PELO_USUARIO"
+
+
+def test_unified_enrichment_api_with_contacts_payload():
+    """Tests POST and GET /api/v1/enrich with lists of people, emails, and phones."""
+    from api.schemas.enrichment import (
+        CommercialStrategyData,
+        ContactAuditSummary,
+        DecisionMakerProfile,
+        GoogleEnrichmentData,
+        LinkedInCompanyProfile,
+        LinkedInEnrichmentData,
+        UnifiedEnrichmentResponse,
+    )
+
+    mock_unified = UnifiedEnrichmentResponse(
+        status="SUCCESS",
+        nome_pesquisado="Matera",
+        google=GoogleEnrichmentData(
+            razao_social="Matera Informática S.A.",
+            nome_fantasia="Matera",
+            cnpj="58.749.123/0001-00",
+            sede="Campinas, SP",
+            website_oficial="https://www.matera.com",
+            telefones=["(19) 3707-1200"],
+            emails=["contato@matera.com"],
+            setor="Tecnologia",
+            porte_estimado="Grande Empresa",
+            o_que_faz="Desenvolve tecnologia bancária e core banking.",
+        ),
+        linkedin=LinkedInEnrichmentData(
+            company_url="https://br.linkedin.com/company/matera",
+            empresa=LinkedInCompanyProfile(
+                nome="Matera",
+                url="https://br.linkedin.com/company/matera",
+            ),
+            total_decisores_encontrados=1,
+            decisores=[
+                DecisionMakerProfile(
+                    nome="Carlos Netto",
+                    cargo="CEO",
+                    nivel_hierarquico="C-Level / Sócio-Fundador",
+                    departamento="Diretoria Geral",
+                    linkedin_url="https://br.linkedin.com/in/carlosnetto",
+                    pertence_ao_qsa=True,
+                    cargo_qsa="Presidente",
+                )
+            ],
+        ),
+        contatos_enriquecidos_usuario=[
+            DecisionMakerProfile(
+                nome="Carlos Netto",
+                cargo="CEO",
+                nivel_hierarquico="C-Level / Sócio-Fundador",
+                departamento="Diretoria Geral",
+                linkedin_url="https://br.linkedin.com/in/carlosnetto",
+                emails_associados=["carlos@matera.com"],
+                telefones_associados=["(19) 3707-1200"],
+                pertence_ao_qsa=True,
+                cargo_qsa="Presidente",
+                origem_dado="usuario_enriquecido",
+            )
+        ],
+        auditoria_contatos=ContactAuditSummary(
+            total_emails_fornecidos=1,
+            emails_validos=["carlos@matera.com"],
+            total_telefones_fornecidos=1,
+            telefones_com_whatsapp=["(19) 3707-1200"],
+        ),
+        inteligencia_comercial=CommercialStrategyData(
+            dor_de_mercado_resolvida="Modernização de legado e automação de Pix.",
+            sugestao_pitch_vendas="Pitch estratégico.",
+            melhor_ponto_de_contato="Carlos Netto",
+            nivel_confianca="ALTA",
+        ),
+    )
+
+    with patch("api.routes.enrichment.enrich_unified_pipeline", return_value=mock_unified):
+        payload = {
+            "name": "Matera",
+            "people": ["Carlos Netto"],
+            "emails": ["carlos@matera.com"],
+            "phones": ["1937071200"],
+            "contacts": [{"nome": "Carlos Netto", "email": "carlos@matera.com", "cargo": "CEO"}],
+        }
+        resp = client.post("/api/v1/enrich", json=payload)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "SUCCESS"
+        assert len(data["contatos_enriquecidos_usuario"]) == 1
+        assert data["contatos_enriquecidos_usuario"][0]["pertence_ao_qsa"] is True
+        assert data["auditoria_contatos"]["emails_validos"] == ["carlos@matera.com"]
+        assert data["auditoria_contatos"]["telefones_com_whatsapp"] == ["(19) 3707-1200"]
+
+        # Test GET with query parameters
+        resp_get = client.get("/api/v1/enrich?name=Matera&people=Carlos+Netto&emails=carlos@matera.com&phones=1937071200")
+        assert resp_get.status_code == 200
+        assert resp_get.json()["status"] == "SUCCESS"
+
 
 
