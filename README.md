@@ -23,6 +23,7 @@
   - [3. Streaming Visual em Tempo Real (Xvfb + noVNC)](#3-streaming-visual-em-tempo-real-xvfb--novnc)
   - [4. Persistência de Sessão Isolada](#4-persistência-de-sessão-isolada)
 - [🤖 Leitor Web para IA (Alternativa ao Firecrawl e Jina Reader)](#-leitor-web-para-ia-alternativa-ao-firecrawl-e-jina-reader)
+- [🎯 API de Enriquecimento de Leads e Empresas (OSINT + IA)](#-api-de-enriquecimento-de-leads-e-empresas-osint--ia)
 - [Matriz de Portas e Serviços](#-matriz-de-portas-e-serviços)
 - [Guia de Inicialização Rápida](#-guia-de-inicialização-rápida)
 - [Como Testar e Disparar Fluxos](#-como-testar-e-disparar-fluxos)
@@ -319,6 +320,34 @@ curl -X POST "http://localhost:8000/api/v1/extract/batch" \
          "https://en.wikipedia.org/wiki/Celery_(software)"
        ],
        "mode": "auto"
+     }'
+```
+
+---
+
+## 🎯 API de Enriquecimento de Leads e Empresas (OSINT + IA)
+
+Motor autônomo de inteligência de vendas e OSINT corporativo que transforma um nome de empresa e lista de contatos em um dossiê comercial 360° estruturado.
+
+### 🌟 Capacidades Integradas:
+1. **Google Search + Gemini 2.5:** Identificação automática de site oficial, apresentação corporativa, portfólio de produtos e modelo de negócio (B2B/SaaS/etc.).
+2. **Receita Federal QSA:** Cruzamento do CNPJ público e Quadro de Sócios e Administradores para detecção oficial de sócios-fundadores e diretores.
+3. **LinkedIn OSINT (Sem Bot Logado):** Mapeamento de perfis executivos (C-Level, VPs, Heads) via Google Dorks e extração de Company Pages institucionais.
+4. **Auditoria de Contatos & Handshake SMTP Zero-Bounce:** Verificação de caixas de e-mail ativas sem disparo de mensagens e identificação do padrão corporativo (`nome@empresa.com`).
+5. **Detecção de WhatsApp:** Validação em tempo real de números telefônicos ativos no WhatsApp via Evolution API.
+6. **Inteligência de Vendas (SDR/BDR):** Sugestão estratégica de dores de mercado resolvidas, gancho de abordagem e melhor ponto de contato.
+
+> 📖 **Documentação Técnica Completa:** Consulte o guia detalhado com todos os esquemas, payloads e exemplos em [docs/API_ENRICHMENT.md](file:///root/playwright-celery-automation/docs/API_ENRICHMENT.md).
+
+#### Exemplo de Chamada Rápida (Unificada):
+```bash
+curl -X POST http://localhost:8000/api/v1/enrich \
+     -H "Content-Type: application/json" \
+     -d '{
+       "name": "Matera",
+       "location": "Campinas SP",
+       "people": ["Carlos Netto"],
+       "emails": ["carlos@matera.com"]
      }'
 ```
 
