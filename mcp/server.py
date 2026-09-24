@@ -15,7 +15,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Union
 
 # Logging configured to stderr so stdout remains clean JSON-RPC protocol stream
 logging.basicConfig(
@@ -46,6 +46,13 @@ SERVER_INFO = {
 }
 
 PROTOCOL_VERSION = "2024-11-05"
+SUPPORTED_PROTOCOL_VERSIONS = {
+    "2024-11-05",
+    "2025-03-26",
+    "2025-06-18",
+    "2025-11-25",
+    "2026-07-28",
+}
 
 # Tool Definitions for MCP Clients
 TOOLS = [
@@ -201,15 +208,24 @@ def _http_request(
 def handle_initialize(req_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
     """Handles MCP initialize handshake."""
     logger.info("Initializing MCP connection from client: %s", params.get("clientInfo"))
+    client_proto = params.get("protocolVersion")
+    protocol_version = client_proto if (client_proto in SUPPORTED_PROTOCOL_VERSIONS or client_proto) else PROTOCOL_VERSION
     return {
         "jsonrpc": "2.0",
         "id": req_id,
         "result": {
-            "protocolVersion": PROTOCOL_VERSION,
+            "protocolVersion": protocol_version,
             "capabilities": {
                 "tools": {
                     "listChanged": False,
-                }
+                },
+                "resources": {
+                    "subscribe": False,
+                    "listChanged": False,
+                },
+                "prompts": {
+                    "listChanged": False,
+                },
             },
             "serverInfo": SERVER_INFO,
         },
@@ -223,6 +239,28 @@ def handle_tools_list(req_id: Any) -> Dict[str, Any]:
         "id": req_id,
         "result": {
             "tools": TOOLS,
+        },
+    }
+
+
+def handle_resources_list(req_id: Any) -> Dict[str, Any]:
+    """Returns empty resources list for clients discovering resources."""
+    return {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "result": {
+            "resources": [],
+        },
+    }
+
+
+def handle_prompts_list(req_id: Any) -> Dict[str, Any]:
+    """Returns empty prompts list for clients discovering prompts."""
+    return {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "result": {
+            "prompts": [],
         },
     }
 
@@ -319,29 +357,32 @@ def handle_tools_call(req_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
         }
 
 
-def process_message(line: str) -> Optional[Dict[str, Any]]:
-    """Parses a single JSON-RPC line and routes to the appropriate handler."""
-    line = line.strip()
-    if not line:
-        return None
-
-    try:
-        msg = json.loads(line)
-    except Exception as e:
-        logger.error("Failed to parse JSON-RPC message: %s", e)
+def process_single_message(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Processes a single JSON-RPC message dictionary."""
+    if not isinstance(msg, dict):
         return {
             "jsonrpc": "2.0",
             "id": None,
-            "error": {"code": -32700, "message": "Parse error: Invalid JSON"},
+            "error": {"code": -32600, "message": "Invalid Request: Expected a JSON object"},
         }
 
     req_id = msg.get("id")
     method = msg.get("method")
     params = msg.get("params", {})
 
-    # Handle notifications (no response needed)
-    if method == "notifications/initialized":
-        logger.info("Client handshake complete (notifications/initialized received)")
+    # Handle notifications (no response needed for notifications)
+    if method in (
+        "notifications/initialized",
+        "notifications/cancelled",
+        "notifications/progress",
+        "notifications/message",
+        "logging/setLevel",
+    ):
+        logger.info("Client MCP notification received: %s", method)
+        return None
+
+    if method and method.startswith("notifications/"):
+        logger.info("Client notification received: %s", method)
         return None
 
     if method == "ping":
@@ -356,6 +397,12 @@ def process_message(line: str) -> Optional[Dict[str, Any]]:
     if method == "tools/call":
         return handle_tools_call(req_id, params)
 
+    if method == "resources/list":
+        return handle_resources_list(req_id)
+
+    if method == "prompts/list":
+        return handle_prompts_list(req_id)
+
     # Unknown method
     if req_id is not None:
         return {
@@ -368,6 +415,38 @@ def process_message(line: str) -> Optional[Dict[str, Any]]:
         }
 
     return None
+
+
+def process_message(data: Any) -> Optional[Union[Dict[str, Any], List[Dict[str, Any]]]]:
+    """Parses JSON-RPC input (string, dict, or batch list) and routes to the appropriate handler."""
+    if isinstance(data, (dict, list)):
+        parsed = data
+    elif isinstance(data, str):
+        line = data.strip()
+        if not line:
+            return None
+        try:
+            parsed = json.loads(line)
+        except Exception as e:
+            logger.error("Failed to parse JSON-RPC message: %s", e)
+            return {
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {"code": -32700, "message": "Parse error: Invalid JSON"},
+            }
+    else:
+        return None
+
+    if isinstance(parsed, list):
+        # JSON-RPC 2.0 batch request
+        responses = []
+        for item in parsed:
+            resp = process_single_message(item)
+            if resp is not None:
+                responses.append(resp)
+        return responses if responses else None
+
+    return process_single_message(parsed)
 
 
 def run_stdio_server():

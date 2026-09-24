@@ -6,7 +6,7 @@ receiving webhooks, and visual browser streaming.
 
 import logging
 from contextlib import asynccontextmanager
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from redis import Redis
 
@@ -87,6 +87,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Mcp-Session-Id", "Content-Type", "Authorization", "X-API-Key"],
 )
 
 # Register routers with Zero-Trust Container API Key Authentication
@@ -195,3 +196,14 @@ def vnc_info(request: Request):
         "worker_1_novnc": f"http://{host}:6081/vnc.html?autoconnect=true",
         "worker_2_novnc": f"http://{host}:6082/vnc.html?autoconnect=true",
     }
+
+
+@app.get("/.well-known/oauth-protected-resource", include_in_schema=False)
+@app.get("/.well-known/oauth-protected-resource/{resource_path:path}", include_in_schema=False)
+def oauth_protected_resource():
+    """Discovery route for RFC 9728 OAuth 2.0 Protected Resource Metadata."""
+    raise HTTPException(
+        status_code=404,
+        detail="OAuth 2.0 Protected Resource Metadata not configured. Use API Key authentication (X-API-Key or Bearer token).",
+    )
+
