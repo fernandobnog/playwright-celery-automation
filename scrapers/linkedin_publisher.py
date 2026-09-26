@@ -39,7 +39,7 @@ def markdown_to_linkedin_pulse_html(md_text: str, blog_url: Optional[str] = None
     """
     Converts raw Markdown from the editorial pipeline into clean, semantic HTML
     specifically structured for LinkedIn Pulse's ProseMirror editor.
-    Strips raw divider lines, repeated H1 titles, metadata lines, and formats
+    Strips raw divider lines, repeated H1/H2 titles, metadata lines, and formats
     subtitles, headings (H3), bold/italic, lists, and interactive anchor tags (<a href>).
     """
     lines = []
@@ -51,10 +51,15 @@ def markdown_to_linkedin_pulse_html(md_text: str, blog_url: Optional[str] = None
             continue
         if trimmed.startswith("CANAL ") or "ARTIGO COMPLETO" in trimmed:
             continue
-        if trimmed.startswith("⏱️") or trimmed.startswith("🖼️"):
+        if (
+            trimmed.startswith("⏱️")
+            or trimmed.startswith("🖼️")
+            or trimmed.lower().startswith("sugestão de imagem")
+            or trimmed.lower().startswith("tempo de leitura")
+        ):
             continue
-        # Strip leading # Title and *Subtitle* if repeated at the top of the body
-        if skip_header and (trimmed.startswith("# ") or trimmed.startswith("*")):
+        # Strip leading # Title, ## Title, and *Subtitle* if repeated at the top of the body
+        if skip_header and (trimmed.startswith("# ") or trimmed.startswith("## ") or trimmed.startswith("*") or not trimmed):
             continue
         if trimmed:
             skip_header = False
@@ -191,17 +196,28 @@ class LinkedInPublisher:
         page.goto("https://www.linkedin.com/feed/", wait_until="domcontentloaded", timeout=self.timeout_ms)
         human_sleep(2.0, 3.5)
 
-        # Check for intermediate 'We are signing you in' / 'Estamos dando acesso' screen transition
-        for _ in range(15):
+        # Check for intermediate 'We are signing you in' / 'Estamos dando acesso' or single-sign-on redirect
+        for attempt in range(15):
             if self.is_logged_in(page):
                 break
             try:
-                page_text = page.content().lower()
-                if any(phrase in page_text for phrase in ["signing you in", "dando acesso", "estamos dando"]):
-                    logger.info("Detected LinkedIn transition screen ('Estamos dando acesso'). Waiting for auto-redirect...")
-                    human_sleep(2.5, 3.5)
+                current_url = page.url.lower()
+                page_text = ""
+                try:
+                    page_text = page.content().lower()
+                except Exception:
+                    pass  # Frame navigation may be in progress
+
+                is_transition = (
+                    "session_redirect" in current_url
+                    or any(phrase in current_url for phrase in ["uas/login", "checkpoint/lg"])
+                    or any(phrase in page_text for phrase in ["signing you in", "dando acesso", "estamos dando", "loading"])
+                )
+                if is_transition:
+                    logger.info("Detected LinkedIn transition/redirect in progress (%d/15, url=%s). Waiting for auto-redirect...", attempt + 1, current_url)
+                human_sleep(1.8, 2.5)
             except Exception:
-                break
+                human_sleep(1.8, 2.5)
 
         if self.is_logged_in(page):
             logger.info("LinkedIn session is ACTIVE and verified.")
@@ -522,20 +538,42 @@ class LinkedInPublisher:
                     try:
                         cover_btn = page.locator("button:has-text('Carregar do computador'), button:has-text('Upload from computer')").first
                         if cover_btn.is_visible(timeout=4000):
-                            with page.expect_file_chooser(timeout=5000) as fc_info:
-                                human_click(page, cover_btn)
-                            file_chooser = fc_info.value
-                            file_chooser.set_files(image_path)
-                            human_sleep(3.0, 4.5)
+                            human_click(page, cover_btn)
+                            human_sleep(1.5, 2.5)
+
+                            # In modern LinkedIn Pulse editor, clicking the cover button opens a modal dialog
+                            file_input = page.locator("div[role='dialog'] input[type='file'], input[type='file']").first
+                            if file_input.count() > 0:
+                                file_input.set_input_files(image_path)
+                                human_sleep(2.0, 3.5)
+                            else:
+                                modal_upload_btn = page.locator("div[role='dialog'] button:has-text('Carregar a partir do computador'), div[role='dialog'] button:has-text('Upload from computer')").first
+                                if modal_upload_btn.is_visible(timeout=3000):
+                                    with page.expect_file_chooser(timeout=5000) as fc_info:
+                                        human_click(page, modal_upload_btn)
+                                    fc_info.value.set_files(image_path)
+                                    human_sleep(2.0, 3.5)
 
                             # Click modal Avançar / Salvar
                             modal_apply = page.locator("div[role='dialog'] button:has-text('Avançar'), div.artdeco-modal button:has-text('Avançar')").first
-                            if modal_apply.is_visible(timeout=4000):
-                                human_click(page, modal_apply)
-                                human_sleep(2.5, 4.0)
-                                logger.info("Cover image attached to Pulse article: %s", image_path)
+                            for _ in range(10):
+                                if modal_apply.is_visible() and modal_apply.is_enabled():
+                                    human_click(page, modal_apply)
+                                    human_sleep(2.5, 4.0)
+                                    logger.info("Cover image attached to Pulse article: %s", image_path)
+                                    break
+                                time.sleep(1.0)
                     except Exception as err_cover:
                         logger.warning("Could not attach cover image to Pulse article (%s). Continuing with text...", err_cover)
+                    finally:
+                        # Ensure any modal left open is closed so it doesn't block the rest of the editor
+                        close_btn = page.locator("div[role='dialog'] button[aria-label*='Fechar'], div[role='dialog'] button[aria-label*='Close'], div.artdeco-modal button[aria-label*='Fechar']").first
+                        if close_btn.is_visible():
+                            try:
+                                close_btn.click()
+                                human_sleep(1.0, 2.0)
+                            except Exception:
+                                pass
 
                 # 3. Fill headline / title
                 title_selectors = [
@@ -564,8 +602,14 @@ class LinkedInPublisher:
                     raise RuntimeError(f"Could not find title field in article editor. Screenshot: {shot_err}")
 
                 logger.info("Typing Pulse article title with non-uniform human cadence: '%s'", title)
-                human_type(page, title_loc, title.strip(), min_delay_ms=85, max_delay_ms=250)
-                human_sleep(1.5, 3.0)
+                human_type(page, title_loc, title.strip(), min_delay_ms=35, max_delay_ms=90)
+                human_sleep(1.0, 2.0)
+
+                # Fallback verification: ensure title field is genuinely populated
+                if not title_loc.input_value().strip():
+                    logger.warning("Title empty after human_type, forcing fill.")
+                    title_loc.fill(title.strip())
+                    human_sleep(0.5, 1.0)
 
                 # 4. Clean and fill article body text into ProseMirror using rich HTML
                 article_html = markdown_to_linkedin_pulse_html(content_markdown, blog_url)
@@ -650,22 +694,34 @@ class LinkedInPublisher:
                     page.screenshot(path=shot_err)
                     raise RuntimeError("Avançar button not ready in article editor.")
 
-                human_idle_wander(page, duration_sec=random.uniform(1.8, 3.2))
-                human_click(page, next_btn)
+                human_idle_wander(page, duration_sec=random.uniform(1.8, 2.8))
+                logger.info("Clicking Avançar button to open share modal...")
+                next_btn.click(timeout=8000)
                 human_sleep(3.5, 5.5)
 
+                # Wait for share modal to appear
+                dialog_loc = page.locator("div[role='dialog'], div.artdeco-modal").first
+                for _ in range(12):
+                    try:
+                        if dialog_loc.is_visible():
+                            break
+                    except Exception:
+                        pass
+                    time.sleep(1.0)
+
                 # 6. In the post-sharing modal, add optional hook and click primary Publicar
-                share_input = page.locator("div[role='dialog'] div[role='textbox'], div[role='dialog'] div.ProseMirror").first
-                if share_input.is_visible(timeout=4000):
+                share_input = page.locator("div[role='dialog'] div[role='textbox'], div[role='dialog'] div.ProseMirror, div[role='dialog'] div.tiptap, div[role='dialog'] [contenteditable='true'], div[role='dialog'] div.ql-editor").first
+                if share_input.is_visible(timeout=5000):
                     share_hook = f"Compartilho meu novo artigo de liderança no LinkedIn: '{title.strip()}'. Leitura completa abaixo 👇"
                     logger.info("Typing share modal hook with human cadence...")
-                    human_type(page, share_input, share_hook, min_delay_ms=75, max_delay_ms=220)
-                    human_sleep(2.0, 4.0)
+                    human_type(page, share_input, share_hook, min_delay_ms=35, max_delay_ms=90)
+                    human_sleep(2.0, 3.5)
 
                 # Click primary action publish button (not the audience settings button)
                 pub_btn_selectors = [
                     "button.share-actions__primary-action",
                     "div[role='dialog'] button.artdeco-button--primary:has-text('Publicar')",
+                    "div[role='dialog'] button:has-text('Publicar')",
                     "button:has-text('Publicar')",
                     "button:has-text('Post')",
                 ]
@@ -688,8 +744,9 @@ class LinkedInPublisher:
                     page.screenshot(path=shot_err)
                     raise RuntimeError("Final Publicar button not found or enabled in share dialog.")
 
-                human_idle_wander(page, duration_sec=random.uniform(2.5, 4.5))
-                human_click(page, pub_btn)
+                human_idle_wander(page, duration_sec=random.uniform(1.8, 3.0))
+                logger.info("Clicking final Publicar button in share dialog...")
+                pub_btn.click(timeout=8000)
                 human_sleep(8.0, 12.0)
 
                 self.save_session_to_disk_and_redis(context)
