@@ -911,7 +911,7 @@ def generate_deep_content_and_deliver(
                 try:
                     import base64
                     with open(generated_cover_path, "rb") as img_f:
-                        img_b64 = f"data:image/png;base64,{base64.b64encode(img_f.read()).decode('utf-8')}"
+                        img_b64 = base64.b64encode(img_f.read()).decode('utf-8')
                     asyncio.run(evo.send_media_message(
                         phone=settings.NOTIFICATION_PHONE,
                         media_base64_or_url=img_b64,

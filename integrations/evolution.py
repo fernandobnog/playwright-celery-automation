@@ -25,7 +25,11 @@ def format_brazilian_phone(raw_phone: str) -> str:
     if not raw_phone:
         raise ValueError("Phone number cannot be empty")
 
-    digits = re.sub(r"\D", "", raw_phone)
+    raw_phone_str = str(raw_phone).strip()
+    if "@g.us" in raw_phone_str or "@s.whatsapp.net" in raw_phone_str:
+        return raw_phone_str
+
+    digits = re.sub(r"\D", "", raw_phone_str)
     if not digits:
         raise ValueError("Phone number contains no digits")
 
@@ -128,9 +132,13 @@ class EvolutionClient:
         """
         normalized = format_brazilian_phone(phone)
         url = f"{self.base_url}/message/sendMedia/{self.instance}"
+        media_payload = media_base64_or_url
+        if media_payload.startswith("data:") and ";base64," in media_payload:
+            media_payload = media_payload.split(";base64,")[1]
+
         payload: Dict[str, Any] = {
             "number": normalized,
-            "media": media_base64_or_url,
+            "media": media_payload,
             "mediatype": media_type,
             "mimetype": mime_type,
             "fileName": file_name,

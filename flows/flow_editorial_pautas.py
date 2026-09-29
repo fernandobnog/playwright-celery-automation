@@ -158,7 +158,13 @@ def render_pautas_email_html(
     )
 
 
-@celery_app.task(name="flows.flow_editorial_pautas.task_daily_editorial_curation")
+@celery_app.task(
+    name="flows.flow_editorial_pautas.task_daily_editorial_curation",
+    autoretry_for=(Exception,),
+    retry_backoff=120,
+    retry_kwargs={"max_retries": 5},
+    retry_jitter=True,
+)
 def task_daily_editorial_curation() -> Dict[str, Any]:
     """
     Periodic task running daily at 07:00 BRT to generate 2 IT topics and 2 Music topics.
@@ -278,6 +284,32 @@ def task_daily_editorial_curation() -> Dict[str, Any]:
         html_body=email_html,
     )
     logger.info("Editorial curation email (4 pautas: TI & Música) dispatched to %s", settings.ADMIN_EMAIL)
+
+    # 5. Dispatch WhatsApp notification with direct 1-click selection links
+    if settings.NOTIFICATION_PHONE:
+        try:
+            import asyncio
+            from integrations.evolution import EvolutionClient
+            evo = EvolutionClient()
+            today_fmt = datetime.now().strftime("%d/%m")
+            wpp_lines = [
+                f"⚡ *4 PAUTAS DO DIA ({today_fmt})*",
+                "Toque no link da pauta escolhida para disparar a redação e pesquisa autônoma:\n",
+            ]
+            for p in curadoria.pautas:
+                icon = "🎵" if "Música" in p.categoria or "Musica" in p.categoria else "💻"
+                wpp_lines.append(f"{icon} *[{p.categoria}]*")
+                wpp_lines.append(f"*{p.titulo}*")
+                if p.angulo_editorial:
+                    wpp_lines.append(f"_{p.angulo_editorial[:150]}..._")
+                wpp_lines.append(f"👉 *Produzir Este Artigo:*")
+                wpp_lines.append(f"{p.action_url}\n")
+
+            wpp_text = "\n".join(wpp_lines)
+            asyncio.run(evo.send_text_message(phone=settings.NOTIFICATION_PHONE, text=wpp_text))
+            logger.info("Editorial curation WhatsApp dispatched to %s", settings.NOTIFICATION_PHONE)
+        except Exception as err_wpp:
+            logger.warning("Could not send editorial curation WhatsApp: %s", err_wpp)
 
     total_articles = len(articles_ti) + len(articles_musica)
     final_result = {
