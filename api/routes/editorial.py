@@ -9,15 +9,16 @@ from datetime import datetime
 import html
 import json
 import logging
-from typing import Any, Dict, Optional
-from fastapi import APIRouter, Query, status
-from fastapi.responses import HTMLResponse
+from typing import Any, Dict, List, Optional
+from fastapi import APIRouter, Form, Query, Request, status
+from fastapi.responses import HTMLResponse, RedirectResponse
 from redis import Redis
 
 from core.config import settings
 from core.security import verify_editorial_action_token, verify_editorial_publish_token
 from flows.flow_content_deep_writer import task_deep_content_generation
 from flows.flow_content_publisher import task_publish_approved_editorial
+from storage.repository import repo
 
 logger = logging.getLogger(__name__)
 
@@ -600,6 +601,16 @@ async def select_editorial_topic(
     logger.info("Editorial topic selected: '%s' [%s]. Queuing Celery pipeline...", pauta_titulo, categoria)
     async_task = task_deep_content_generation.delay(payload)
 
+    # Sync pool status to EM_PRODUCAO
+    try:
+        pool_matches = repo.list_editorial_pautas_pool(search=pauta_titulo, limit=5)
+        for m in pool_matches:
+            if m["titulo"].strip().lower() == pauta_titulo.strip().lower():
+                repo.update_editorial_pauta_status(m["id"], "EM_PRODUCAO")
+                break
+    except Exception as e_pool:
+        logger.debug("Could not update pool status from select: %s", e_pool)
+
     return HTMLResponse(
         content=_render_success_html(escaped_title, escaped_cat, async_task.id)
     )
@@ -768,4 +779,846 @@ async def publish_approved_editorial_endpoint(
     return HTMLResponse(
         content=_render_publish_success_html(escaped_title, escaped_cat, async_task.id, doc_url)
     )
+
+
+# ==============================================================================
+# Central Editorial Web Hub (/editorial/hub)
+# ==============================================================================
+
+def _render_hub_page(
+    stats: Dict[str, Any],
+    pautas: List[Dict[str, Any]],
+    active_tab: str = "backlog",
+    active_cat: str = "all",
+    search_query: str = "",
+    msg: str = "",
+) -> str:
+    """
+    Renders the modern, responsive Editorial Hub interface for backlog browsing,
+    topic suggestions, and publication monitoring.
+    """
+    disponiveis = stats.get("disponiveis", 0)
+    publicados = stats.get("publicados", 0)
+    arquivados = stats.get("arquivados", 0)
+    ti_disp = stats.get("ti_disponiveis", 0)
+    musica_disp = stats.get("musica_disponiveis", 0)
+    manuais = stats.get("manuais", 0)
+
+    # Toast / Alert messages
+    alert_html = ""
+    if msg == "suggest_saved":
+        alert_html = """
+        <div class="hub-alert alert-success">
+            <span>✓</span> <strong>Novo tema registrado com sucesso!</strong> A pauta já está disponível no seu backlog.
+        </div>
+        """
+    elif msg == "archived":
+        alert_html = """
+        <div class="hub-alert alert-info">
+            <span>📦</span> <strong>Pauta arquivada.</strong> Você pode acessá-la ou restaurá-la na aba 'Arquivadas'.
+        </div>
+        """
+    elif msg == "restored":
+        alert_html = """
+        <div class="hub-alert alert-success">
+            <span>♻️</span> <strong>Pauta restaurada!</strong> Ela voltou a ficar ativa no seu Banco de Pautas.
+        </div>
+        """
+    elif msg == "error_empty":
+        alert_html = """
+        <div class="hub-alert alert-error">
+            <span>⚠️</span> O título do tema é obrigatório para cadastrar uma nova sugestão.
+        </div>
+        """
+
+    # Tab content generation
+    tab_content = ""
+    if active_tab == "suggest":
+        tab_content = f"""
+        <div class="hub-card form-card">
+            <div class="form-header">
+                <span class="badge" style="background-color: #fef3c7; color: #b45309;">💡 Sugestão Manual</span>
+                <h2 style="margin: 10px 0 6px 0; font-size: 20px; color: #0f172a;">Propor Novo Tema Editorial</h2>
+                <p style="margin: 0; color: #64748b; font-size: 13px;">
+                    Insira uma ideia própria de tema para guardar no backlog ou disparar na hora a pesquisa profunda com Playwright e redação multicanal.
+                </p>
+            </div>
+            
+            <form action="/api/v1/editorial/hub/suggest" method="post" style="margin-top: 24px;">
+                <div class="form-group">
+                    <label for="titulo" class="form-label">Título da Pauta / Assunto Central <span style="color: #ef4444;">*</span></label>
+                    <input type="text" id="titulo" name="titulo" class="form-control" required 
+                           placeholder="Ex: Como a Nova Diretriz de Cibersegurança Altera o Uso de Agentes de IA nas Finanças" />
+                </div>
+
+                <div class="form-group">
+                    <label for="categoria" class="form-label">Categoria Editorial</label>
+                    <select id="categoria" name="categoria" class="form-control">
+                        <option value="Tecnologia da Informação (TI)">💻 Tecnologia da Informação (TI)</option>
+                        <option value="Música & Mercado Musical">🎵 Música & Mercado Musical</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="angulo_editorial" class="form-label">Ângulo Editorial / Tese Central (Opcional)</label>
+                    <textarea id="angulo_editorial" name="angulo_editorial" class="form-control" rows="3"
+                              placeholder="Qual é o ponto de vista crítico, lição de liderança ou reflexão técnica que o artigo deve desenvolver?"></textarea>
+                </div>
+
+                <div class="form-group">
+                    <label for="fontes" class="form-label">Links de Apoio ou Matérias Base (Opcional, 1 por linha)</label>
+                    <textarea id="fontes" name="fontes" class="form-control" rows="2"
+                              placeholder="https://exemplo.com/noticia-sobre-o-tema&#10;https://outro.org/relatorio.pdf"></textarea>
+                </div>
+
+                <div class="form-actions">
+                    <button type="submit" name="action_mode" value="save" class="btn btn-secondary">
+                        💾 Guardar no Banco de Pautas
+                    </button>
+                    <button type="submit" name="action_mode" value="produce" class="btn btn-primary" onclick="return confirm('Deseja iniciar a produção autônoma imediata deste artigo (pesquisa profunda no Google + Google Docs)?');">
+                        ⚡ Produzir Imediatamente (1 Clique)
+                    </button>
+                </div>
+            </form>
+        </div>
+        """
+    elif active_tab == "published":
+        if not pautas:
+            tab_content = """
+            <div class="empty-state">
+                <div class="empty-icon">📰</div>
+                <h3>Nenhum artigo publicado encontrado</h3>
+                <p>Assim que os artigos forem aprovados e veiculados no Blog, eles aparecerão listados aqui.</p>
+            </div>
+            """
+        else:
+            cards_html = []
+            for p in pautas:
+                escaped_title = html.escape(p.get("titulo", "Artigo"))
+                escaped_cat = html.escape(p.get("categoria", "Geral"))
+                created_date = p.get("created_at", "")[:10]
+                theme = _get_category_theme(escaped_cat)
+                
+                cards_html.append(f"""
+                <div class="pauta-card">
+                    <div class="pauta-header">
+                        <span class="badge" style="background-color: {theme['badge_bg']}; color: {theme['badge_text']};">
+                            {theme['icon']} {escaped_cat}
+                        </span>
+                        <span class="badge" style="background-color: #dcfce7; color: #15803d;">✓ Publicado</span>
+                        <span class="pauta-date">{created_date}</span>
+                    </div>
+                    <h3 class="pauta-title">{escaped_title}</h3>
+                    {f'<div class="pauta-angle"><strong>Ângulo:</strong> {html.escape(p["angulo_editorial"])}</div>' if p.get("angulo_editorial") else ''}
+                    <div style="display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap;">
+                        <a href="https://www.fernandonogueira.dev.br/blog" target="_blank" class="btn btn-sm btn-outline">
+                            🌐 Ver no Blog
+                        </a>
+                    </div>
+                </div>
+                """)
+            tab_content = "".join(cards_html)
+    elif active_tab == "archived":
+        if not pautas:
+            tab_content = """
+            <div class="empty-state">
+                <div class="empty-icon">📦</div>
+                <h3>Nenhuma pauta arquivada</h3>
+                <p>Pautas descartadas aparecerão aqui e poderão ser restauradas para o backlog a qualquer momento.</p>
+            </div>
+            """
+        else:
+            cards_html = []
+            for p in pautas:
+                escaped_title = html.escape(p.get("titulo", "Pauta"))
+                escaped_cat = html.escape(p.get("categoria", "Geral"))
+                created_date = p.get("created_at", "")[:10]
+                p_id = p.get("id")
+                cards_html.append(f"""
+                <div class="pauta-card" style="opacity: 0.85;">
+                    <div class="pauta-header">
+                        <span class="badge" style="background-color: #f1f5f9; color: #64748b;">
+                            {escaped_cat}
+                        </span>
+                        <span class="badge" style="background-color: #fee2e2; color: #991b1b;">📦 Arquivada</span>
+                        <span class="pauta-date">{created_date}</span>
+                    </div>
+                    <h3 class="pauta-title">{escaped_title}</h3>
+                    <div style="margin-top: 14px;">
+                        <a href="/api/v1/editorial/hub/archive/{p_id}" class="btn btn-sm btn-secondary">
+                            ♻️ Restaurar para Backlog
+                        </a>
+                    </div>
+                </div>
+                """)
+            tab_content = "".join(cards_html)
+    else:  # backlog
+        cat_filter_bar = f"""
+        <div class="filter-bar">
+            <div class="filter-pills">
+                <a href="/api/v1/editorial/hub?tab=backlog&cat=all{f'&q={search_query}' if search_query else ''}" 
+                   class="pill {'pill-active' if active_cat == 'all' else ''}">
+                   Todas ({disponiveis})
+                </a>
+                <a href="/api/v1/editorial/hub?tab=backlog&cat=ti{f'&q={search_query}' if search_query else ''}" 
+                   class="pill {'pill-active' if active_cat == 'ti' else ''}">
+                   💻 Tecnologia ({ti_disp})
+                </a>
+                <a href="/api/v1/editorial/hub?tab=backlog&cat=musica{f'&q={search_query}' if search_query else ''}" 
+                   class="pill {'pill-active' if active_cat == 'musica' else ''}">
+                   🎵 Música ({musica_disp})
+                </a>
+            </div>
+
+            <form action="/api/v1/editorial/hub" method="get" class="search-form">
+                <input type="hidden" name="tab" value="backlog" />
+                <input type="hidden" name="cat" value="{active_cat}" />
+                <input type="text" name="q" value="{html.escape(search_query)}" placeholder="Buscar por termo ou tese..." class="search-input" />
+                <button type="submit" class="search-btn">🔍</button>
+                {f'<a href="/api/v1/editorial/hub?tab=backlog&cat={active_cat}" class="search-clear">✖</a>' if search_query else ''}
+            </form>
+        </div>
+        """
+
+        if not pautas:
+            tab_content = cat_filter_bar + f"""
+            <div class="empty-state">
+                <div class="empty-icon">🔍</div>
+                <h3>Nenhuma pauta disponível encontrada</h3>
+                <p>Tente alterar o filtro de categoria ou o termo da busca.</p>
+                <div style="margin-top: 16px;">
+                    <a href="/api/v1/editorial/hub?tab=suggest" class="btn btn-primary">💡 Sugerir Novo Tema</a>
+                </div>
+            </div>
+            """
+        else:
+            cards_html = [cat_filter_bar]
+            for p in pautas:
+                escaped_title = html.escape(p.get("titulo", "Pauta"))
+                escaped_cat = html.escape(p.get("categoria", "Geral"))
+                origem = p.get("origem", "DAILY_CURATION")
+                created_date = p.get("created_at", "")[:10]
+                p_id = p.get("id")
+                theme = _get_category_theme(escaped_cat)
+
+                origem_badge = """<span class="badge" style="background-color: #fef3c7; color: #b45309;">💡 Manual</span>""" if origem == "MANUAL" else """<span class="badge" style="background-color: #f1f5f9; color: #475569;">🤖 Curadoria</span>"""
+
+                angulo_html = f"""<div class="pauta-angle"><strong>Tese / Ângulo:</strong> {html.escape(p['angulo_editorial'])}</div>""" if p.get("angulo_editorial") else ""
+                
+                sintese_html = f"""<div class="pauta-sintese">{html.escape(p['sintese_factual'][:260])}{'...' if len(p.get('sintese_factual', '')) > 260 else ''}</div>""" if p.get("sintese_factual") else ""
+
+                cards_html.append(f"""
+                <div class="pauta-card">
+                    <div class="pauta-header">
+                        <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+                            <span class="badge" style="background-color: {theme['badge_bg']}; color: {theme['badge_text']};">
+                                {theme['icon']} {escaped_cat}
+                            </span>
+                            {origem_badge}
+                        </div>
+                        <span class="pauta-date">{created_date}</span>
+                    </div>
+
+                    <h3 class="pauta-title">{escaped_title}</h3>
+                    {angulo_html}
+                    {sintese_html}
+
+                    <div class="pauta-actions">
+                        <a href="/api/v1/editorial/hub/produce/{p_id}" class="btn btn-primary btn-sm" 
+                           onclick="return confirm('Iniciar produção autônoma deste artigo? O robô fará pesquisa profunda no Google e criará o Google Docs para sua revisão.');">
+                            🚀 Produzir Este Artigo
+                        </a>
+                        <a href="/api/v1/editorial/hub/archive/{p_id}" class="btn btn-secondary btn-sm"
+                           onclick="return confirm('Mover esta pauta para o arquivo?');" title="Arquivar pauta">
+                            🗑️ Arquivar
+                        </a>
+                    </div>
+                </div>
+                """)
+            tab_content = "".join(cards_html)
+
+    return f"""<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Central Editorial & Banco de Temas - fernandonogueira.dev.br</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        * {{ box-sizing: border-box; }}
+        body {{
+            margin: 0;
+            padding: 30px 16px 60px 16px;
+            background-color: #f1f5f9;
+            font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+            color: #0f172a;
+            -webkit-font-smoothing: antialiased;
+        }}
+        .hub-container {{
+            width: 100%;
+            max-width: 860px;
+            margin: 0 auto;
+        }}
+        /* Header Hero */
+        .hub-hero {{
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+            border-radius: 14px;
+            overflow: hidden;
+            box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.15);
+            margin-bottom: 24px;
+            border-top: 4px solid #3b82f6;
+        }}
+        .hub-hero-inner {{
+            padding: 30px 32px;
+        }}
+        .hero-tag {{
+            display: inline-block;
+            background-color: rgba(59, 130, 246, 0.2);
+            color: #93c5fd;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            padding: 4px 10px;
+            border-radius: 4px;
+            text-transform: uppercase;
+            margin-bottom: 12px;
+        }}
+        .hero-title {{
+            margin: 0 0 8px 0;
+            color: #ffffff;
+            font-size: 24px;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+        }}
+        .hero-subtitle {{
+            margin: 0 0 20px 0;
+            color: #94a3b8;
+            font-size: 14px;
+            line-height: 22px;
+            max-width: 680px;
+        }}
+        .hero-stats {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }}
+        .stat-pill {{
+            background-color: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 12px;
+            color: #e2e8f0;
+            font-weight: 600;
+        }}
+        .stat-pill strong {{ color: #ffffff; }}
+
+        /* Tabs Nav */
+        .tabs-nav {{
+            display: flex;
+            background-color: #ffffff;
+            border-radius: 10px;
+            padding: 6px;
+            box-shadow: 0 2px 6px rgba(15, 23, 42, 0.04);
+            border: 1px solid #e2e8f0;
+            margin-bottom: 20px;
+            overflow-x: auto;
+            gap: 6px;
+        }}
+        .tab-btn {{
+            flex: 1;
+            text-align: center;
+            padding: 10px 14px;
+            font-size: 13px;
+            font-weight: 700;
+            color: #64748b;
+            text-decoration: none;
+            border-radius: 8px;
+            transition: all 0.2s ease;
+            white-space: nowrap;
+        }}
+        .tab-btn:hover {{
+            background-color: #f8fafc;
+            color: #0f172a;
+        }}
+        .tab-btn.tab-active {{
+            background-color: #0f172a;
+            color: #ffffff;
+            box-shadow: 0 2px 4px rgba(15, 23, 42, 0.1);
+        }}
+
+        /* Alerts */
+        .hub-alert {{
+            padding: 14px 18px;
+            border-radius: 8px;
+            font-size: 13px;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }}
+        .alert-success {{
+            background-color: #dcfce7;
+            color: #15803d;
+            border: 1px solid #bbf7d0;
+        }}
+        .alert-info {{
+            background-color: #e0f2fe;
+            color: #0369a1;
+            border: 1px solid #bae6fd;
+        }}
+        .alert-error {{
+            background-color: #fee2e2;
+            color: #991b1b;
+            border: 1px solid #fecaca;
+        }}
+
+        /* Filter & Search Bar */
+        .filter-bar {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin-bottom: 20px;
+        }}
+        .filter-pills {{
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }}
+        .pill {{
+            padding: 6px 14px;
+            border-radius: 20px;
+            background-color: #ffffff;
+            border: 1px solid #cbd5e1;
+            color: #475569;
+            font-size: 12px;
+            font-weight: 600;
+            text-decoration: none;
+            transition: all 0.15s ease;
+        }}
+        .pill:hover {{
+            border-color: #94a3b8;
+            color: #0f172a;
+        }}
+        .pill-active {{
+            background-color: #3b82f6;
+            color: #ffffff !important;
+            border-color: #3b82f6;
+        }}
+        .search-form {{
+            display: flex;
+            align-items: center;
+            background-color: #ffffff;
+            border: 1px solid #cbd5e1;
+            border-radius: 20px;
+            padding: 2px 10px;
+        }}
+        .search-input {{
+            border: none;
+            outline: none;
+            padding: 6px 8px;
+            font-size: 12px;
+            color: #0f172a;
+            width: 180px;
+            background: transparent;
+        }}
+        .search-btn {{
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 14px;
+        }}
+        .search-clear {{
+            color: #94a3b8;
+            text-decoration: none;
+            font-size: 12px;
+            margin-left: 4px;
+        }}
+
+        /* Pauta Cards */
+        .pauta-card {{
+            background-color: #ffffff;
+            border-radius: 12px;
+            border: 1px solid #e2e8f0;
+            padding: 22px 24px;
+            margin-bottom: 16px;
+            box-shadow: 0 2px 4px rgba(15, 23, 42, 0.03);
+            transition: transform 0.15s ease, box-shadow 0.15s ease;
+        }}
+        .pauta-card:hover {{
+            box-shadow: 0 6px 16px rgba(15, 23, 42, 0.07);
+        }}
+        .pauta-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+            gap: 8px;
+        }}
+        .badge {{
+            display: inline-block;
+            font-size: 11px;
+            font-weight: 800;
+            letter-spacing: 0.6px;
+            padding: 3px 10px;
+            border-radius: 20px;
+            text-transform: uppercase;
+        }}
+        .pauta-date {{
+            font-size: 12px;
+            color: #94a3b8;
+            font-weight: 500;
+        }}
+        .pauta-title {{
+            margin: 0 0 10px 0;
+            font-size: 18px;
+            font-weight: 700;
+            color: #0f172a;
+            line-height: 25px;
+            letter-spacing: -0.3px;
+        }}
+        .pauta-angle {{
+            border-left: 3px solid #cbd5e1;
+            padding-left: 12px;
+            color: #475569;
+            font-size: 13px;
+            line-height: 20px;
+            margin-bottom: 12px;
+            font-style: italic;
+        }}
+        .pauta-sintese {{
+            background-color: #f8fafc;
+            border-radius: 6px;
+            padding: 12px 14px;
+            color: #334155;
+            font-size: 13px;
+            line-height: 20px;
+            margin-bottom: 16px;
+        }}
+        .pauta-actions {{
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            border-top: 1px solid #f1f5f9;
+            padding-top: 14px;
+            align-items: center;
+        }}
+
+        /* Buttons */
+        .btn {{
+            display: inline-block;
+            font-family: inherit;
+            font-weight: 700;
+            font-size: 13px;
+            padding: 9px 18px;
+            border-radius: 6px;
+            text-decoration: none;
+            cursor: pointer;
+            border: none;
+            transition: all 0.2s ease;
+        }}
+        .btn-primary {{
+            background-color: #0f172a;
+            color: #ffffff;
+        }}
+        .btn-primary:hover {{
+            background-color: #334155;
+        }}
+        .btn-secondary {{
+            background-color: #f1f5f9;
+            color: #475569;
+            border: 1px solid #cbd5e1;
+        }}
+        .btn-secondary:hover {{
+            background-color: #e2e8f0;
+            color: #0f172a;
+        }}
+        .btn-outline {{
+            background-color: transparent;
+            color: #0f172a;
+            border: 1px solid #cbd5e1;
+        }}
+        .btn-outline:hover {{
+            background-color: #f8fafc;
+        }}
+        .btn-sm {{
+            padding: 7px 14px;
+            font-size: 12px;
+        }}
+
+        /* Form Card */
+        .form-card {{
+            background-color: #ffffff;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 4px 12px rgba(15, 23, 42, 0.05);
+            border: 1px solid #e2e8f0;
+        }}
+        .form-group {{
+            margin-bottom: 20px;
+        }}
+        .form-label {{
+            display: block;
+            font-size: 13px;
+            font-weight: 700;
+            color: #334155;
+            margin-bottom: 6px;
+        }}
+        .form-control {{
+            width: 100%;
+            padding: 10px 14px;
+            font-family: inherit;
+            font-size: 14px;
+            color: #0f172a;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            outline: none;
+            transition: border-color 0.2s ease, box-shadow 0.2s ease;
+        }}
+        .form-control:focus {{
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+        }}
+        .form-actions {{
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+            margin-top: 28px;
+            border-top: 1px solid #f1f5f9;
+            padding-top: 20px;
+            flex-wrap: wrap;
+        }}
+
+        /* Empty State */
+        .empty-state {{
+            background-color: #ffffff;
+            border-radius: 12px;
+            padding: 48px 24px;
+            text-align: center;
+            border: 1px dashed #cbd5e1;
+            color: #64748b;
+        }}
+        .empty-icon {{
+            font-size: 40px;
+            margin-bottom: 12px;
+        }}
+        .empty-state h3 {{
+            color: #0f172a;
+            margin: 0 0 6px 0;
+            font-size: 18px;
+        }}
+        .empty-state p {{
+            margin: 0;
+            font-size: 13px;
+        }}
+    </style>
+</head>
+<body>
+    <div class="hub-container">
+        <!-- Hero Header -->
+        <div class="hub-hero">
+            <div class="hub-hero-inner">
+                <span class="hero-tag">✦ Central Editorial & Backlog</span>
+                <h1 class="hero-title">Gestão e Seleção de Temas</h1>
+                <p class="hero-subtitle">
+                    Escolha qualquer pauta já minerada que ainda não foi publicada ou sugira uma ideia própria para acionar a pesquisa profunda e redação autônoma.
+                </p>
+                <div class="hero-stats">
+                    <div class="stat-pill"><strong>{disponiveis}</strong> Pautas no Backlog</div>
+                    <div class="stat-pill">💻 <strong>{ti_disp}</strong> TI</div>
+                    <div class="stat-pill">🎵 <strong>{musica_disp}</strong> Música</div>
+                    <div class="stat-pill">💡 <strong>{manuais}</strong> Sugestões Próprias</div>
+                    <div class="stat-pill">✓ <strong>{publicados}</strong> Já Publicados</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Feedback Alert -->
+        {alert_html}
+
+        <!-- Tabs Bar -->
+        <div class="tabs-nav">
+            <a href="/api/v1/editorial/hub?tab=backlog" class="tab-btn {'tab-active' if active_tab == 'backlog' else ''}">
+                📚 Banco de Pautas ({disponiveis})
+            </a>
+            <a href="/api/v1/editorial/hub?tab=suggest" class="tab-btn {'tab-active' if active_tab == 'suggest' else ''}">
+                💡 Sugerir Novo Tema
+            </a>
+            <a href="/api/v1/editorial/hub?tab=published" class="tab-btn {'tab-active' if active_tab == 'published' else ''}">
+                ✅ Histórico Publicado ({publicados})
+            </a>
+            <a href="/api/v1/editorial/hub?tab=archived" class="tab-btn {'tab-active' if active_tab == 'archived' else ''}">
+                📦 Arquivadas ({arquivados})
+            </a>
+        </div>
+
+        <!-- Main Tab Content -->
+        {tab_content}
+    </div>
+</body>
+</html>
+"""
+
+
+@router.get("/hub", response_class=HTMLResponse)
+async def editorial_hub(
+    tab: str = Query("backlog", description="Aba ativa: backlog, suggest, published, archived"),
+    cat: str = Query("all", description="Filtro de categoria: all, ti, musica"),
+    q: Optional[str] = Query(None, description="Busca textual por palavra-chave"),
+    msg: Optional[str] = Query(None, description="Mensagem de feedback"),
+):
+    """
+    Web dashboard for managing the editorial backlog, picking past topics,
+    and submitting custom ideas.
+    """
+    stats = repo.get_editorial_pautas_stats()
+
+    if tab == "published":
+        pautas = repo.list_editorial_pautas_pool(
+            status="PUBLICADO",
+            categoria=cat if cat != "all" else None,
+            search=q,
+            limit=100,
+        )
+    elif tab == "archived":
+        pautas = repo.list_editorial_pautas_pool(
+            status="ARQUIVADO",
+            categoria=cat if cat != "all" else None,
+            search=q,
+            limit=100,
+        )
+    else:  # backlog
+        pautas = repo.list_editorial_pautas_pool(
+            status="DISPONIVEL",
+            categoria=cat if cat != "all" else None,
+            search=q,
+            limit=100,
+        )
+
+    return HTMLResponse(
+        content=_render_hub_page(
+            stats=stats,
+            pautas=pautas,
+            active_tab=tab,
+            active_cat=cat,
+            search_query=q or "",
+            msg=msg or "",
+        )
+    )
+
+
+@router.post("/hub/suggest")
+async def hub_suggest_pauta(
+    titulo: str = Form(...),
+    categoria: str = Form("Tecnologia da Informação (TI)"),
+    angulo_editorial: Optional[str] = Form(None),
+    fontes: Optional[str] = Form(None),
+    action_mode: str = Form("save"),
+):
+    """
+    Submits a manual topic suggestion either to save in the backlog or to produce immediately.
+    """
+    clean_titulo = titulo.strip()
+    if not clean_titulo:
+        return RedirectResponse(
+            "/api/v1/editorial/hub?tab=suggest&msg=error_empty",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    fontes_list = [f.strip() for f in fontes.split("\n") if f.strip()] if fontes else []
+
+    saved_pauta = repo.save_editorial_pauta(
+        titulo=clean_titulo,
+        categoria=categoria,
+        origem="MANUAL",
+        angulo_editorial=angulo_editorial.strip() if angulo_editorial else None,
+        sintese_factual=f"Tema proposto manualmente pelo autor em {datetime.now().strftime('%d/%m/%Y %H:%M')}.",
+        roteiro_topicos=[],
+        fontes=fontes_list,
+        status="DISPONIVEL",
+    )
+
+    if action_mode == "produce":
+        repo.update_editorial_pauta_status(saved_pauta["id"], "EM_PRODUCAO")
+        payload = {
+            "pauta_id": saved_pauta["id"],
+            "pauta_titulo": clean_titulo,
+            "categoria": categoria,
+            "target_format": "both",
+            "angulo_editorial": angulo_editorial,
+            "sintese_fiel_das_materias": f"Tema sugerido manualmente: {clean_titulo}. Fontes: {', '.join(fontes_list)}",
+            "curation_date": datetime.now().strftime("%Y%m%d"),
+        }
+        logger.info("Manual topic production triggered from hub: '%s'", clean_titulo)
+        async_task = task_deep_content_generation.delay(payload)
+        return HTMLResponse(
+            content=_render_success_html(
+                html.escape(clean_titulo),
+                html.escape(categoria),
+                async_task.id,
+            )
+        )
+
+    return RedirectResponse(
+        "/api/v1/editorial/hub?tab=backlog&msg=suggest_saved",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@router.get("/hub/produce/{pauta_id}", response_class=HTMLResponse)
+async def hub_produce_pauta(pauta_id: int):
+    """
+    Triggers autonomous production for a pauta selected from the backlog.
+    """
+    pauta = repo.get_editorial_pauta(pauta_id)
+    if not pauta:
+        return HTMLResponse("Pauta não encontrada", status_code=status.HTTP_404_NOT_FOUND)
+
+    repo.update_editorial_pauta_status(pauta_id, "EM_PRODUCAO")
+    payload = {
+        "pauta_id": pauta["id"],
+        "pauta_titulo": pauta["titulo"],
+        "categoria": pauta["categoria"],
+        "target_format": "both",
+        "angulo_editorial": pauta.get("angulo_editorial"),
+        "sintese_fiel_das_materias": pauta.get("sintese_factual"),
+        "curation_date": datetime.now().strftime("%Y%m%d"),
+    }
+    logger.info("Topic production triggered from backlog hub: '%s' (#%d)", pauta["titulo"], pauta_id)
+    async_task = task_deep_content_generation.delay(payload)
+    return HTMLResponse(
+        content=_render_success_html(
+            html.escape(pauta["titulo"]),
+            html.escape(pauta["categoria"]),
+            async_task.id,
+        )
+    )
+
+
+@router.get("/hub/archive/{pauta_id}")
+async def hub_archive_pauta(pauta_id: int):
+    """
+    Toggles the archived state of a pauta in the pool.
+    """
+    pauta = repo.get_editorial_pauta(pauta_id)
+    if not pauta:
+        return RedirectResponse("/api/v1/editorial/hub", status_code=status.HTTP_303_SEE_OTHER)
+
+    if pauta["status"] == "ARQUIVADO":
+        repo.update_editorial_pauta_status(pauta_id, "DISPONIVEL")
+        return RedirectResponse(
+            "/api/v1/editorial/hub?tab=archived&msg=restored",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    else:
+        repo.update_editorial_pauta_status(pauta_id, "ARQUIVADO")
+        return RedirectResponse(
+            "/api/v1/editorial/hub?tab=backlog&msg=archived",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
 

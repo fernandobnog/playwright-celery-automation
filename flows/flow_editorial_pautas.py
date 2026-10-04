@@ -269,6 +269,23 @@ def task_daily_editorial_curation() -> Dict[str, Any]:
         )
         pauta.action_url = f"{base_url}/api/v1/editorial/select?token={token}"
 
+        # Persist into editorial pautas pool
+        try:
+            repo.save_editorial_pauta(
+                titulo=pauta.titulo,
+                categoria=pauta.categoria,
+                origem="DAILY_CURATION",
+                angulo_editorial=pauta.angulo_editorial,
+                sintese_factual=pauta.sintese_fiel_das_materias,
+                roteiro_topicos=pauta.topicos_para_redacao,
+                fontes=[f.model_dump() for f in pauta.fontes_relacionadas] if pauta.fontes_relacionadas else [],
+                status="DISPONIVEL",
+                task_id=task_id,
+                action_token=token,
+            )
+        except Exception as exc_save:
+            logger.warning("Could not persist pauta '%s' to pool: %s", pauta.titulo, exc_save)
+
     # 4. Render and Send HTML Email with Memory Badge
     email_html = render_pautas_email_html(
         pautas=curadoria.pautas,
@@ -304,6 +321,11 @@ def task_daily_editorial_curation() -> Dict[str, Any]:
                     wpp_lines.append(f"_{p.angulo_editorial[:150]}..._")
                 wpp_lines.append(f"👉 *Produzir Este Artigo:*")
                 wpp_lines.append(f"{p.action_url}\n")
+
+            wpp_lines.append("───────────────────────")
+            wpp_lines.append("📚 *Não curtiu nenhuma hoje ou quer ver o histórico?*")
+            wpp_lines.append("Acesse a Central Editorial para escolher do banco de pautas ou sugerir um tema novo:")
+            wpp_lines.append("👉 https://www.fernandonogueira.dev.br/api/v1/editorial/hub\n")
 
             wpp_text = "\n".join(wpp_lines)
             asyncio.run(evo.send_text_message(phone=settings.NOTIFICATION_PHONE, text=wpp_text))

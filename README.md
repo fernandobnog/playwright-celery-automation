@@ -24,6 +24,7 @@
   - [4. Persistência de Sessão Isolada](#4-persistência-de-sessão-isolada)
 - [🤖 Leitor Web para IA (Alternativa ao Firecrawl e Jina Reader)](#-leitor-web-para-ia-alternativa-ao-firecrawl-e-jina-reader)
 - [🎯 API de Enriquecimento de Leads e Empresas (OSINT + IA)](#-api-de-enriquecimento-de-leads-e-empresas-osint--ia)
+- [✍️ Central Editorial & Banco de Pautas (Backlog & Sugestão Manual)](#-central-editorial--banco-de-pautas)
 - [Matriz de Portas e Serviços](#-matriz-de-portas-e-serviços)
 - [Guia de Inicialização Rápida](#-guia-de-inicialização-rápida)
 - [Como Testar e Disparar Fluxos](#-como-testar-e-disparar-fluxos)
@@ -350,6 +351,25 @@ curl -X POST http://localhost:8000/api/v1/enrich \
        "emails": ["carlos@matera.com"]
      }'
 ```
+
+---
+
+## ✍️ Central Editorial & Banco de Pautas (Backlog & Sugestão Manual)
+
+Plataforma unificada para gestão do pipeline de conteúdo do blog oficial (`fernandonogueira.dev.br/blog`) e publicações no LinkedIn. Permite resgatar pautas históricas não selecionadas e propor novos temas sob demanda.
+
+### 🌟 Funcionalidades Principais:
+1. **Backlog Dinâmico de Pautas (`editorial_pautas_pool`):** Todo tema curado diariamente fica disponível no banco SQLite para ser produzido a qualquer momento.
+2. **Backfill Histórico Automático:** Mais de 60 pautas mineradas nos ciclos anteriores catalogadas e prontas para uso.
+3. **Sugestão Manual de Temas:** Formulário integrado para propor ideias de pauta com opção de salvar no backlog ou disparar na hora a pesquisa profunda no Google e redação de 4 canais.
+4. **Acionamento em 1 Clique:** Disparo autônomo via Celery (`task_deep_content_generation`) com notificação do Google Docs via WhatsApp e e-mail.
+5. **Acesso Direto nos Alertas:** Botões e links nos e-mails matinais e mensagens da Evolution API direcionando para a Central.
+
+> 📖 **Documentação Detalhada:** Consulte o guia completo em [docs/CENTRAL_EDITORIAL_HUB.md](file:///root/playwright-celery-automation/docs/CENTRAL_EDITORIAL_HUB.md).
+
+#### Como Acessar a Central Editorial:
+* **Produção (HTTPS):** [https://www.fernandonogueira.dev.br/api/v1/editorial/hub](https://www.fernandonogueira.dev.br/api/v1/editorial/hub)
+* **Localmente:** `http://localhost:8000/api/v1/editorial/hub`
 
 ---
 
