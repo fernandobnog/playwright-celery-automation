@@ -674,20 +674,21 @@ class PipelineRepository:
             if cursor.fetchone()[0] == 0:
                 targets = [
                     # TI Jurídico & Legaltech / LegalOps
-                    ("Daniel Becker", "TI_JURIDICO", "https://www.linkedin.com/in/daniel-becker-52195029/", "Sócio BBL Advogados, Top Voice, Diretor de Novas Tecnologias, LegalOps e IA Jurídica (>40k)"),
-                    ("Paulo Samico", "TI_JURIDICO", "https://www.linkedin.com/in/paulosamico/", "Gerente Jurídico na BAT, Top Voice em Inovação Jurídica e Gestão Legal (>30k)"),
-                    ("Bruno Feigelson", "TI_JURIDICO", "https://www.linkedin.com/in/brunofeigelson/", "Cofundador da AB2L (Lawtechs), Futurista Jurídico e Investidor (>45k)"),
-                    ("Erik Fontenele Nybo", "TI_JURIDICO", "https://www.linkedin.com/in/erik-fontenele-nybo/", "Fundador da Bits Academy, Legal Design e IA prática (>30k)"),
+                    ("Daniel Becker", "TI_JURIDICO", "https://www.linkedin.com/in/danielbeckerpinto/", "Sócio BBL Advogados, Top Voice, Diretor de Novas Tecnologias, LegalOps e IA Jurídica (>40k)"),
+                    ("Paulo Samico", "TI_JURIDICO", "https://www.linkedin.com/in/paulo-samico/", "Gerente Jurídico, Top Voice em Inovação Jurídica e Gestão Legal (>30k)"),
+                    ("Bruno Feigelson", "TI_JURIDICO", "https://www.linkedin.com/in/bruno-feigelson/", "Cofundador da AB2L (Lawtechs), Futurista Jurídico e Investidor (>45k)"),
+                    ("Erik Fontenele Nybo", "TI_JURIDICO", "https://www.linkedin.com/in/erikfontenelenybo/", "Fundador da Bits Academy, Legal Design e IA prática (>30k)"),
                     # Advocacia Corporativa, Cibersegurança & Direito Digital
-                    ("Patrícia Peck", "ADVOCACIA", "https://www.linkedin.com/in/patricia-peck-pinheiro/", "Sócia Peck Advogados, Conselheira ANPD, Pioneira em Direito Digital e Segurança (>100k)"),
-                    ("Renato Opice Blum", "ADVOCACIA", "https://www.linkedin.com/in/renato-opice-blum-b333917/", "Sócio Opice Blum Advogados, Top Voice Direito Digital e IA nos Tribunais (>70k)"),
-                    ("Camilla Jimene", "ADVOCACIA", "https://www.linkedin.com/in/camillajimene/", "Sócia Opice Blum, Especialista em Cibersegurança e Resposta a Incidentes (>30k)"),
-                    ("Alexandre Atheniense", "ADVOCACIA", "https://www.linkedin.com/in/alexandre-atheniense-171891/", "Pioneiro em Direito e Tecnologia, Governança de Dados e IA (>25k)"),
+                    ("Patrícia Peck", "ADVOCACIA", "https://www.linkedin.com/in/patriciapeckpinheiro/", "Sócia Peck Advogados, Conselheira ANPD, Pioneira em Direito Digital e Segurança (>100k)"),
+                    ("Renato Opice Blum", "ADVOCACIA", "https://www.linkedin.com/in/renatoopiceblum/", "Sócio Opice Blum Advogados, Top Voice Direito Digital e IA nos Tribunais (>70k)"),
+                    ("Camilla Jimene", "ADVOCACIA", "https://www.linkedin.com/in/camilla-jimene-55648363/", "Sócia Opice Blum, Especialista em Cibersegurança e Resposta a Incidentes (>30k)"),
+                    ("Alexandre Atheniense", "ADVOCACIA", "https://www.linkedin.com/in/atheniense/", "Pioneiro em Direito e Tecnologia, Governança de Dados e IA (>25k)"),
                     # RH, Gestão de Pessoas & Futuro do Trabalho
-                    ("Léo Oliveira", "RH", "https://www.linkedin.com/in/leooliveirabr/", "CEO Humanos & IA, Top Voice IA em RH e Transformação Cultural (>50k)"),
-                    ("Sofia Esteves", "RH", "https://www.linkedin.com/in/sofiaesteves/", "Presidente do Conselho Cia de Talentos, Top Voice RH e Carreira (>200k)"),
+                    ("Léo Oliveira", "RH", "https://www.linkedin.com/in/leooliveirahr/", "CEO Humanos & IA, Top Voice IA em RH e Transformação Cultural (>50k)"),
+                    ("Sofia Esteves", "RH", "https://www.linkedin.com/in/estevessofia/", "Presidente do Conselho Cia de Talentos, Top Voice RH e Carreira (>200k)"),
                     ("Ruy Shiozawa", "RH", "https://www.linkedin.com/in/ruyshiozawa/", "Ex-CEO Great Place to Work (GPTW) Brasil, Cultura e Clima (>80k)"),
-                    ("Gabriela Augusto", "RH", "https://www.linkedin.com/in/gabriela-augusto/", "Fundadora Transcendemos, Top Voice Consultoria Corporativa e Inclusão (>40k)"),
+                    ("Gabriela Augusto", "RH", "https://www.linkedin.com/in/gabriela-augusto-a30466195/", "Fundadora Transcendemos, Top Voice Consultoria Corporativa e Inclusão (>40k)"),
+
                 ]
                 conn.executemany(
                     """
@@ -715,6 +716,50 @@ class PipelineRepository:
                 (limit,),
             )
             return [dict(row) for row in cursor.fetchall()]
+
+    def get_all_linkedin_targets(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Returns all targets (active or paused) ordered by id."""
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT id, nome, nicho, linkedin_url, descricao, ultimo_post_id, ultimo_check, ativo, created_at
+                FROM linkedin_growth_targets
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def add_linkedin_target(self, nome: str, nicho: str, linkedin_url: str, descricao: Optional[str] = None) -> int:
+        """Adds a new target to radar."""
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO linkedin_growth_targets (nome, nicho, linkedin_url, descricao, ativo)
+                VALUES (?, ?, ?, ?, 1)
+                """,
+                (nome.strip(), nicho.strip().upper(), linkedin_url.strip(), (descricao or "").strip()),
+            )
+            conn.commit()
+            return cursor.lastrowid
+
+    def toggle_linkedin_target(self, target_id: int) -> bool:
+        """Toggles active/inactive state of a target."""
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                "UPDATE linkedin_growth_targets SET ativo = CASE WHEN ativo = 1 THEN 0 ELSE 1 END WHERE id = ?",
+                (target_id,),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def delete_linkedin_target(self, target_id: int) -> bool:
+        """Deletes a target profile."""
+        with self._get_connection() as conn:
+            cursor = conn.execute("DELETE FROM linkedin_growth_targets WHERE id = ?", (target_id,))
+            conn.commit()
+            return cursor.rowcount > 0
 
     def update_target_last_check(self, target_id: int, last_post_id: Optional[str] = None):
         """Updates last_check timestamp and latest post ID for a target."""
@@ -814,6 +859,19 @@ class PipelineRepository:
                 """
                 SELECT * FROM linkedin_growth_comments
                 WHERE status = 'PENDING_APPROVAL'
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_all_linkedin_growth_comments(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Retrieves recent comments regardless of status."""
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT * FROM linkedin_growth_comments
                 ORDER BY created_at DESC
                 LIMIT ?
                 """,

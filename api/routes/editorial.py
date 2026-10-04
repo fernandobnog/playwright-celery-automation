@@ -10,8 +10,9 @@ import html
 import json
 import logging
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Form, Query, Request, status
+from fastapi import APIRouter, Form, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
+from pydantic import BaseModel
 from redis import Redis
 
 from core.config import settings
@@ -1789,9 +1790,9 @@ async def approve_linkedin_comment(token: str = Query(..., description="Action t
 @router.get("/linkedin-targets")
 async def list_linkedin_targets():
     """
-    Returns active targets and general statistics for LinkedIn Sniper Growth.
+    Returns all targets and general statistics for LinkedIn Sniper Growth.
     """
-    targets = repo.get_active_linkedin_targets(limit=100)
+    targets = repo.get_all_linkedin_targets(limit=100)
     stats = repo.get_linkedin_growth_stats()
     return {
         "status": "SUCCESS",
@@ -1801,18 +1802,116 @@ async def list_linkedin_targets():
     }
 
 
+class LinkedInTargetCreate(BaseModel):
+    nome: str
+    nicho: str = "TI_JURIDICO"
+    linkedin_url: str
+    descricao: Optional[str] = None
+
+
+@router.post("/linkedin-targets")
+async def create_linkedin_target(payload: LinkedInTargetCreate):
+    """
+    Creates a new monitored LinkedIn target.
+    """
+    if not payload.nome or not payload.linkedin_url:
+        raise HTTPException(status_code=400, detail="Nome e URL do LinkedIn são obrigatórios.")
+    target_id = repo.add_linkedin_target(
+        nome=payload.nome,
+        nicho=payload.nicho,
+        linkedin_url=payload.linkedin_url,
+        descricao=payload.descricao,
+    )
+    return {"status": "SUCCESS", "target_id": target_id}
+
+
+@router.post("/linkedin-targets/{target_id}/toggle")
+async def toggle_linkedin_target(target_id: int):
+    """
+    Toggles active/inactive state of a target.
+    """
+    ok = repo.toggle_linkedin_target(target_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Alvo não encontrado.")
+    return {"status": "SUCCESS", "target_id": target_id}
+
+
+@router.delete("/linkedin-targets/{target_id}")
+async def delete_linkedin_target(target_id: int):
+    """
+    Deletes a monitored target.
+    """
+    ok = repo.delete_linkedin_target(target_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Alvo não encontrado.")
+    return {"status": "SUCCESS", "target_id": target_id}
+
+
 @router.get("/linkedin-comments")
 async def list_linkedin_comments():
     """
     Returns pending and recent sniper comments generated for approval.
     """
-    comments = repo.get_pending_linkedin_growth_comments(limit=50)
+    pending = repo.get_pending_linkedin_growth_comments(limit=50)
+    all_comments = repo.get_all_linkedin_growth_comments(limit=50)
     stats = repo.get_linkedin_growth_stats()
     return {
         "status": "SUCCESS",
         "stats": stats,
-        "pending_count": len(comments),
-        "comments": comments,
+        "pending_count": len(pending),
+        "pending_comments": pending,
+        "comments": all_comments,
+    }
+
+
+@router.post("/linkedin-comments/{comment_id}/approve")
+async def direct_approve_linkedin_comment(comment_id: int):
+    """
+    Directly approves and enqueues publication of a sniper comment from authenticated dashboard.
+    """
+    from flows.flow_linkedin_growth import task_publish_approved_linkedin_comment
+    comment = repo.get_linkedin_growth_comment_by_id(comment_id)
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comentário não encontrado.")
+    
+    async_task = task_publish_approved_linkedin_comment.delay(comment_id)
+    repo.update_linkedin_growth_comment_status(comment_id, "APPROVED")
+    return {
+        "status": "SUCCESS",
+        "task_id": async_task.id,
+        "comment_id": comment_id,
+        "message": "Comentário aprovado! Publicação em andamento pelo Playwright.",
+    }
+
+
+@router.post("/linkedin-comments/{comment_id}/reject")
+async def direct_reject_linkedin_comment(comment_id: int):
+    """
+    Rejects a sniper comment.
+    """
+    comment = repo.get_linkedin_growth_comment_by_id(comment_id)
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comentário não encontrado.")
+    
+    repo.update_linkedin_growth_comment_status(comment_id, "REJECTED")
+    return {
+        "status": "SUCCESS",
+        "comment_id": comment_id,
+        "message": "Comentário rejeitado.",
+    }
+
+
+@router.post("/linkedin-radar/trigger")
+async def trigger_linkedin_radar():
+    """
+    Triggers an immediate scan of active targets via Celery.
+    """
+    from flows.flow_linkedin_growth import task_linkedin_sniper_radar
+    async_task = task_linkedin_sniper_radar.delay(batch_size=4)
+    return {
+        "status": "SUCCESS",
+        "task_id": async_task.id,
+        "message": "Radar disparado com sucesso em segundo plano!",
     }
 
 
