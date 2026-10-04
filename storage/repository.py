@@ -113,10 +113,41 @@ class PipelineRepository:
                 CREATE INDEX IF NOT EXISTS idx_pautas_pool_status ON editorial_pautas_pool(status);
                 CREATE INDEX IF NOT EXISTS idx_pautas_pool_categoria ON editorial_pautas_pool(categoria);
                 CREATE INDEX IF NOT EXISTS idx_pautas_pool_created ON editorial_pautas_pool(created_at);
+
+                CREATE TABLE IF NOT EXISTS linkedin_growth_targets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    nome TEXT NOT NULL,
+                    nicho TEXT NOT NULL,
+                    linkedin_url TEXT UNIQUE NOT NULL,
+                    descricao TEXT,
+                    ultimo_post_id TEXT,
+                    ultimo_check TIMESTAMP,
+                    ativo BOOLEAN DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS linkedin_growth_comments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    target_id INTEGER,
+                    target_nome TEXT NOT NULL,
+                    post_url TEXT NOT NULL UNIQUE,
+                    post_texto TEXT NOT NULL,
+                    post_autor TEXT,
+                    comentario_gerado TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'PENDING_APPROVAL',
+                    action_token TEXT UNIQUE,
+                    published_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(target_id) REFERENCES linkedin_growth_targets(id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_linkedin_targets_ativo ON linkedin_growth_targets(ativo);
+                CREATE INDEX IF NOT EXISTS idx_linkedin_comments_status ON linkedin_growth_comments(status);
             """)
             conn.commit()
             self._backfill_editorial_publications(conn)
             self._backfill_editorial_pautas_pool(conn)
+            self._seed_default_linkedin_targets(conn)
 
     def save_scraped_items(self, task_id: str, source_url: str, items: List[Dict[str, Any]]):
         """Inserts a batch of scraped items."""
@@ -634,6 +665,185 @@ class PipelineRepository:
                 "ti_disponiveis": row["ti_disponiveis"] or 0,
                 "musica_disponiveis": row["musica_disponiveis"] or 0,
                 "manuais": row["manuais"] or 0,
+            }
+
+    def _seed_default_linkedin_targets(self, conn: sqlite3.Connection):
+        """Seeds the curated high-influence targets if table is empty."""
+        try:
+            cursor = conn.execute("SELECT COUNT(*) FROM linkedin_growth_targets")
+            if cursor.fetchone()[0] == 0:
+                targets = [
+                    # TI Jurídico & Legaltech / LegalOps
+                    ("Daniel Becker", "TI_JURIDICO", "https://www.linkedin.com/in/daniel-becker-52195029/", "Sócio BBL Advogados, Top Voice, Diretor de Novas Tecnologias, LegalOps e IA Jurídica (>40k)"),
+                    ("Paulo Samico", "TI_JURIDICO", "https://www.linkedin.com/in/paulosamico/", "Gerente Jurídico na BAT, Top Voice em Inovação Jurídica e Gestão Legal (>30k)"),
+                    ("Bruno Feigelson", "TI_JURIDICO", "https://www.linkedin.com/in/brunofeigelson/", "Cofundador da AB2L (Lawtechs), Futurista Jurídico e Investidor (>45k)"),
+                    ("Erik Fontenele Nybo", "TI_JURIDICO", "https://www.linkedin.com/in/erik-fontenele-nybo/", "Fundador da Bits Academy, Legal Design e IA prática (>30k)"),
+                    # Advocacia Corporativa, Cibersegurança & Direito Digital
+                    ("Patrícia Peck", "ADVOCACIA", "https://www.linkedin.com/in/patricia-peck-pinheiro/", "Sócia Peck Advogados, Conselheira ANPD, Pioneira em Direito Digital e Segurança (>100k)"),
+                    ("Renato Opice Blum", "ADVOCACIA", "https://www.linkedin.com/in/renato-opice-blum-b333917/", "Sócio Opice Blum Advogados, Top Voice Direito Digital e IA nos Tribunais (>70k)"),
+                    ("Camilla Jimene", "ADVOCACIA", "https://www.linkedin.com/in/camillajimene/", "Sócia Opice Blum, Especialista em Cibersegurança e Resposta a Incidentes (>30k)"),
+                    ("Alexandre Atheniense", "ADVOCACIA", "https://www.linkedin.com/in/alexandre-atheniense-171891/", "Pioneiro em Direito e Tecnologia, Governança de Dados e IA (>25k)"),
+                    # RH, Gestão de Pessoas & Futuro do Trabalho
+                    ("Léo Oliveira", "RH", "https://www.linkedin.com/in/leooliveirabr/", "CEO Humanos & IA, Top Voice IA em RH e Transformação Cultural (>50k)"),
+                    ("Sofia Esteves", "RH", "https://www.linkedin.com/in/sofiaesteves/", "Presidente do Conselho Cia de Talentos, Top Voice RH e Carreira (>200k)"),
+                    ("Ruy Shiozawa", "RH", "https://www.linkedin.com/in/ruyshiozawa/", "Ex-CEO Great Place to Work (GPTW) Brasil, Cultura e Clima (>80k)"),
+                    ("Gabriela Augusto", "RH", "https://www.linkedin.com/in/gabriela-augusto/", "Fundadora Transcendemos, Top Voice Consultoria Corporativa e Inclusão (>40k)"),
+                ]
+                conn.executemany(
+                    """
+                    INSERT OR IGNORE INTO linkedin_growth_targets (nome, nicho, linkedin_url, descricao)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    targets,
+                )
+                conn.commit()
+                logger.info("Seeded %d default curated LinkedIn growth targets.", len(targets))
+        except Exception as e:
+            logger.warning("Could not seed default LinkedIn targets: %s", e)
+
+    def get_active_linkedin_targets(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Returns active LinkedIn targets ordered by last check timestamp."""
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT id, nome, nicho, linkedin_url, descricao, ultimo_post_id, ultimo_check, ativo, created_at
+                FROM linkedin_growth_targets
+                WHERE ativo = 1
+                ORDER BY ultimo_check ASC NULLS FIRST, id ASC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def update_target_last_check(self, target_id: int, last_post_id: Optional[str] = None):
+        """Updates last_check timestamp and latest post ID for a target."""
+        with self._get_connection() as conn:
+            if last_post_id:
+                conn.execute(
+                    "UPDATE linkedin_growth_targets SET ultimo_check = CURRENT_TIMESTAMP, ultimo_post_id = ? WHERE id = ?",
+                    (last_post_id, target_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE linkedin_growth_targets SET ultimo_check = CURRENT_TIMESTAMP WHERE id = ?",
+                    (target_id,),
+                )
+            conn.commit()
+
+    def save_linkedin_growth_comment(
+        self,
+        target_id: int,
+        target_nome: str,
+        post_url: str,
+        post_texto: str,
+        post_autor: Optional[str],
+        comentario_gerado: str,
+        action_token: Optional[str] = None,
+    ) -> int:
+        """Saves a generated sniper comment for approval."""
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO linkedin_growth_comments (
+                    target_id, target_nome, post_url, post_texto, post_autor,
+                    comentario_gerado, status, action_token
+                ) VALUES (?, ?, ?, ?, ?, ?, 'PENDING_APPROVAL', ?)
+                ON CONFLICT(post_url) DO UPDATE SET
+                    comentario_gerado = excluded.comentario_gerado,
+                    action_token = COALESCE(excluded.action_token, linkedin_growth_comments.action_token)
+                """,
+                (
+                    target_id,
+                    target_nome,
+                    post_url,
+                    post_texto,
+                    post_autor or target_nome,
+                    comentario_gerado,
+                    action_token,
+                ),
+            )
+            conn.commit()
+            return cursor.lastrowid
+
+    def get_linkedin_growth_comment_by_id(self, comment_id: int) -> Optional[Dict[str, Any]]:
+        """Finds comment record by primary key."""
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM linkedin_growth_comments WHERE id = ?",
+                (comment_id,),
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def get_linkedin_growth_comment_by_token(self, token: str) -> Optional[Dict[str, Any]]:
+        """Finds comment record by action token."""
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM linkedin_growth_comments WHERE action_token = ?",
+                (token,),
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def update_linkedin_growth_comment_status(
+        self,
+        comment_id: int,
+        status: str,
+        published_at: Optional[str] = None,
+    ) -> bool:
+        """Updates comment workflow status (e.g. APPROVED, PUBLISHED, REJECTED)."""
+        with self._get_connection() as conn:
+            if status.upper() == "PUBLISHED":
+                cursor = conn.execute(
+                    "UPDATE linkedin_growth_comments SET status = ?, published_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (status.upper(), comment_id),
+                )
+            else:
+                cursor = conn.execute(
+                    "UPDATE linkedin_growth_comments SET status = ? WHERE id = ?",
+                    (status.upper(), comment_id),
+                )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def get_pending_linkedin_growth_comments(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """Retrieves comments awaiting human review."""
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT * FROM linkedin_growth_comments
+                WHERE status = 'PENDING_APPROVAL'
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_linkedin_growth_stats(self) -> Dict[str, int]:
+        """Summary metrics for the LinkedIn Growth engine."""
+        with self._get_connection() as conn:
+            row_targets = conn.execute(
+                "SELECT COUNT(*) as total_targets, SUM(CASE WHEN ativo=1 THEN 1 ELSE 0 END) as active_targets FROM linkedin_growth_targets"
+            ).fetchone()
+            row_comments = conn.execute(
+                """
+                SELECT
+                    COUNT(*) as total_comments,
+                    SUM(CASE WHEN status = 'PENDING_APPROVAL' THEN 1 ELSE 0 END) as pending,
+                    SUM(CASE WHEN status = 'APPROVED' THEN 1 ELSE 0 END) as approved,
+                    SUM(CASE WHEN status = 'PUBLISHED' THEN 1 ELSE 0 END) as published
+                FROM linkedin_growth_comments
+                """
+            ).fetchone()
+            return {
+                "total_targets": (row_targets["total_targets"] if row_targets else 0) or 0,
+                "active_targets": (row_targets["active_targets"] if row_targets else 0) or 0,
+                "total_comments": (row_comments["total_comments"] if row_comments else 0) or 0,
+                "pending_comments": (row_comments["pending"] if row_comments else 0) or 0,
+                "approved_comments": (row_comments["approved"] if row_comments else 0) or 0,
+                "published_comments": (row_comments["published"] if row_comments else 0) or 0,
             }
 
 

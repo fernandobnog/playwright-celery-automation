@@ -67,10 +67,17 @@ celery_app.conf.update(
         "flows.flow_company_enrichment.task_enrich_full_company": {"queue": "flows"},
         "flows.flow_company_enrichment.task_enrich_unified": {"queue": "flows"},
         "flows.flow_company_enrichment.task_extract_linkedin_company": {"queue": "flows"},
+        "flows.flow_linkedin_growth.task_linkedin_sniper_radar": {"queue": "flows"},
+        "flows.flow_linkedin_growth.task_publish_approved_linkedin_comment": {"queue": "scraping"},
     },
 
     # Beat Periodic Schedules (Automations replacing n8n scheduled triggers)
     beat_schedule={
+        "linkedin-sniper-radar-periodic": {
+            "task": "flows.flow_linkedin_growth.task_linkedin_sniper_radar",
+            "schedule": crontab(minute="*/45", hour="8-19", day_of_week="1-5"),  # Every 45m business hours (Mon-Fri)
+            "options": {"queue": "flows"},
+        },
         "check-links-nt-periodic": {
             "task": "flows.flow_link_monitor.task_check_network_links",
             "schedule": crontab(minute="*"),  # Every minute (Check Links NT)
@@ -125,6 +132,7 @@ celery_app.conf.update(
         "flows.flow_content_deep_writer",
         "flows.flow_content_publisher",
         "flows.flow_company_enrichment",
+        "flows.flow_linkedin_growth",
     ],
 )
 

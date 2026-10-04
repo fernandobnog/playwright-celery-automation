@@ -550,3 +550,105 @@ def verify_editorial_publish_token(token: str) -> Optional[dict]:
         logger.warning("Failed to decode or verify editorial publish token: %s", e)
         return None
 
+
+def create_linkedin_comment_action_token(
+    comment_id: int,
+    post_url: str,
+    target_nome: str,
+    expires_in_seconds: int = 259200,  # 3 days validity
+) -> str:
+    """
+    Generates a secure token for approving a generated LinkedIn sniper comment from WhatsApp/email.
+    Prioritizes short Redis-backed tokens (lkc_<12chars>) to prevent WhatsApp link truncation.
+    """
+    import base64
+    import hashlib
+    import hmac
+    import json
+    import time
+    from redis import Redis
+
+    payload = {
+        "action": "approve_linkedin_comment",
+        "comment_id": comment_id,
+        "post_url": post_url,
+        "target_nome": target_nome,
+        "exp": int(time.time()) + expires_in_seconds,
+    }
+
+    try:
+        redis_client = Redis.from_url(settings.REDIS_URL, decode_responses=True, socket_connect_timeout=2)
+        redis_client.ping()
+        short_token = f"lkc_{secrets.token_urlsafe(12)}"
+        redis_client.set(f"linkedin:comment_token:{short_token}", json.dumps(payload), ex=expires_in_seconds)
+        logger.info("Generated short LinkedIn comment token '%s' stored in Redis.", short_token)
+        return short_token
+    except Exception as err_redis:
+        logger.warning("Could not store short LinkedIn comment token in Redis (%s). Falling back to HMAC.", err_redis)
+
+    raw_payload = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    b64_payload = base64.urlsafe_b64encode(raw_payload).decode("utf-8").rstrip("=")
+    secret = (settings.LEAD_APPROVAL_SECRET or "default_secret").encode("utf-8")
+    signature = hmac.new(secret, b64_payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{b64_payload}.{signature}"
+
+
+def verify_linkedin_comment_action_token(token: str) -> Optional[dict]:
+    """
+    Validates the LinkedIn comment approval token.
+    Supports both short Redis tokens (lkc_...) and self-contained HMAC signed tokens.
+    """
+    import base64
+    import hashlib
+    import hmac
+    import json
+    import time
+    from redis import Redis
+
+    if not token:
+        return None
+
+    clean_token = token.strip()
+
+    # 1. Check Redis for short comment token
+    if clean_token.startswith("lkc_") or "." not in clean_token:
+        try:
+            redis_client = Redis.from_url(settings.REDIS_URL, decode_responses=True, socket_connect_timeout=2)
+            cached_data = redis_client.get(f"linkedin:comment_token:{clean_token}")
+            if cached_data:
+                payload = json.loads(cached_data)
+                if payload.get("exp", 0) >= time.time():
+                    return payload
+                logger.warning("Short LinkedIn comment token '%s' in Redis has expired.", clean_token)
+                return None
+        except Exception as err_redis:
+            logger.warning("Failed to check Redis for short LinkedIn comment token: %s", err_redis)
+
+    # 2. Fallback: Self-contained HMAC signature verification
+    if "." not in clean_token:
+        return None
+
+    try:
+        b64_payload, signature = clean_token.split(".", 1)
+        secret = (settings.LEAD_APPROVAL_SECRET or "default_secret").encode("utf-8")
+        expected_sig = hmac.new(secret, b64_payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
+        if not hmac.compare_digest(signature, expected_sig):
+            return None
+
+        pad = len(b64_payload) % 4
+        if pad:
+            b64_payload += "=" * (4 - pad)
+
+        raw_payload = base64.urlsafe_b64decode(b64_payload.encode("utf-8")).decode("utf-8")
+        payload = json.loads(raw_payload)
+
+        if payload.get("exp", 0) < time.time():
+            return None
+
+        return payload
+    except Exception as e:
+        logger.warning("Failed to decode or verify LinkedIn comment action token: %s", e)
+        return None
+
+

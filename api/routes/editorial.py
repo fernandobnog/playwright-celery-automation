@@ -15,7 +15,11 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from redis import Redis
 
 from core.config import settings
-from core.security import verify_editorial_action_token, verify_editorial_publish_token
+from core.security import (
+    verify_editorial_action_token,
+    verify_editorial_publish_token,
+    verify_linkedin_comment_action_token,
+)
 from flows.flow_content_deep_writer import task_deep_content_generation
 from flows.flow_content_publisher import task_publish_approved_editorial
 from storage.repository import repo
@@ -1621,4 +1625,194 @@ async def hub_archive_pauta(pauta_id: int):
             "/api/v1/editorial/hub?tab=backlog&msg=archived",
             status_code=status.HTTP_303_SEE_OTHER,
         )
+
+
+def _render_linkedin_comment_approved_html(target_nome: str, post_url: str, comentario: str, task_id: str) -> str:
+    return f"""<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Comentário Sniper Aprovado | OmniFlow</title>
+    <style>
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background: #0f172a;
+            color: #f8fafc;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+        }}
+        .card {{
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 16px;
+            max-width: 580px;
+            width: 100%;
+            padding: 32px;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+        }}
+        .badge {{
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: #064e3b;
+            color: #34d399;
+            padding: 6px 14px;
+            border-radius: 9999px;
+            font-size: 13px;
+            font-weight: 600;
+            margin-bottom: 20px;
+        }}
+        h1 {{
+            font-size: 24px;
+            margin: 0 0 12px 0;
+            color: #ffffff;
+        }}
+        p {{
+            color: #94a3b8;
+            line-height: 1.6;
+            margin: 0 0 20px 0;
+        }}
+        .preview-box {{
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 10px;
+            padding: 16px;
+            margin-bottom: 24px;
+        }}
+        .preview-label {{
+            font-size: 11px;
+            color: #64748b;
+            text-transform: uppercase;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }}
+        .comment-text {{
+            font-size: 14px;
+            color: #e2e8f0;
+            line-height: 1.5;
+            white-space: pre-wrap;
+        }}
+        .btn {{
+            display: inline-block;
+            background: #0077b5;
+            color: #ffffff;
+            text-decoration: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 14px;
+            transition: background 0.2s;
+        }}
+        .btn:hover {{
+            background: #005582;
+        }}
+        .footer {{
+            margin-top: 20px;
+            font-size: 12px;
+            color: #64748b;
+        }}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="badge">
+            <span>✓</span> APROVADO & EM PUBLICAÇÃO
+        </div>
+        <h1>Comentário Sniper em Andamento</h1>
+        <p>O comentário foi aprovado com sucesso! O worker do Playwright está digitando de forma humanizada e publicando no post de <strong>{html.escape(target_nome)}</strong>.</p>
+        
+        <div class="preview-box">
+            <div class="preview-label">Comentário Aprovado:</div>
+            <div class="comment-text">{html.escape(comentario)}</div>
+        </div>
+
+        <a href="{html.escape(post_url)}" target="_blank" class="btn">Ver Post no LinkedIn ↗</a>
+        
+        <div class="footer">
+            Task Celery ID: {html.escape(task_id)} • Confirmação será enviada via WhatsApp.
+        </div>
+    </div>
+</body>
+</html>"""
+
+
+@router.get("/linkedin-comment/approve", response_class=HTMLResponse)
+async def approve_linkedin_comment(token: str = Query(..., description="Action token for sniper comment approval")):
+    """
+    Callback endpoint triggered by 1-click WhatsApp/email approval.
+    Verifies HMAC/Redis token, dispatches Playwright publication task, and returns confirmation screen.
+    """
+    from flows.flow_linkedin_growth import task_publish_approved_linkedin_comment
+
+    payload = verify_linkedin_comment_action_token(token)
+    if not payload:
+        return HTMLResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content="""<!DOCTYPE html><html><body style="font-family:sans-serif;background:#0f172a;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;">
+            <div style="background:#1e293b;padding:32px;border-radius:12px;max-width:480px;text-align:center;">
+            <h2 style="color:#ef4444;">Token Inválido ou Expirado</h2>
+            <p style="color:#94a3b8;">O link de aprovação deste comentário expirou ou já foi utilizado anteriormente.</p>
+            </div></body></html>""",
+        )
+
+    comment_id = payload.get("comment_id")
+    comment = repo.get_linkedin_growth_comment_by_id(comment_id)
+    if not comment:
+        return HTMLResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content="""<!DOCTYPE html><html><body style="font-family:sans-serif;background:#0f172a;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;">
+            <div style="background:#1e293b;padding:32px;border-radius:12px;max-width:480px;text-align:center;">
+            <h2 style="color:#f59e0b;">Comentário Não Encontrado</h2>
+            <p style="color:#94a3b8;">O registro deste comentário não foi localizado no banco de dados.</p>
+            </div></body></html>""",
+        )
+
+    # Dispatch Celery background task
+    async_task = task_publish_approved_linkedin_comment.delay(comment_id)
+    repo.update_linkedin_growth_comment_status(comment_id, "APPROVED")
+
+    return HTMLResponse(
+        content=_render_linkedin_comment_approved_html(
+            target_nome=comment["target_nome"],
+            post_url=comment["post_url"],
+            comentario=comment["comentario_gerado"],
+            task_id=async_task.id,
+        )
+    )
+
+
+@router.get("/linkedin-targets")
+async def list_linkedin_targets():
+    """
+    Returns active targets and general statistics for LinkedIn Sniper Growth.
+    """
+    targets = repo.get_active_linkedin_targets(limit=100)
+    stats = repo.get_linkedin_growth_stats()
+    return {
+        "status": "SUCCESS",
+        "stats": stats,
+        "total": len(targets),
+        "targets": targets,
+    }
+
+
+@router.get("/linkedin-comments")
+async def list_linkedin_comments():
+    """
+    Returns pending and recent sniper comments generated for approval.
+    """
+    comments = repo.get_pending_linkedin_growth_comments(limit=50)
+    stats = repo.get_linkedin_growth_stats()
+    return {
+        "status": "SUCCESS",
+        "stats": stats,
+        "pending_count": len(comments),
+        "comments": comments,
+    }
+
 

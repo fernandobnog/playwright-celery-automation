@@ -767,5 +767,285 @@ class LinkedInPublisher:
                 if browser:
                     browser.close()
 
+    def get_latest_post_from_profile(self, profile_url: str) -> Optional[Dict[str, Any]]:
+        """
+        Navigates to the target profile's recent activity feed and extracts the latest publication.
+        Returns a dict with post_id, post_url, text, author, and time_text, or None if no post found.
+        """
+        logger.info("Checking latest activity for profile: %s", profile_url)
+        state_file = self.sync_session_from_redis_or_disk()
+
+        with sync_playwright() as p:
+            launch_args = [
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+            ]
+            browser = None
+            if settings.PLAYWRIGHT_USER_DATA_DIR and Path(settings.PLAYWRIGHT_USER_DATA_DIR).exists():
+                context = p.chromium.launch_persistent_context(
+                    user_data_dir=settings.PLAYWRIGHT_USER_DATA_DIR,
+                    headless=self.headless,
+                    args=launch_args,
+                    viewport={"width": 1280, "height": 850},
+                    user_agent=PERSISTENT_USER_AGENT,
+                    locale="pt-BR",
+                    timezone_id="America/Sao_Paulo",
+                )
+                page = context.pages[0] if context.pages else context.new_page()
+            else:
+                browser = p.chromium.launch(headless=self.headless, args=launch_args)
+                context_kwargs = {
+                    "viewport": {"width": 1280, "height": 850},
+                    "user_agent": PERSISTENT_USER_AGENT,
+                    "locale": "pt-BR",
+                    "timezone_id": "America/Sao_Paulo",
+                }
+                if state_file:
+                    context_kwargs["storage_state"] = state_file
+                context = browser.new_context(**context_kwargs)
+                page = context.new_page()
+
+            context.add_init_script(STEALTH_EVASION_SCRIPT)
+
+            try:
+                self.ensure_authenticated(page, context)
+
+                activity_url = profile_url.rstrip("/") + "/recent-activity/all/"
+                logger.info("Visiting activity feed: %s", activity_url)
+                page.goto(activity_url, wait_until="domcontentloaded", timeout=30000)
+                human_sleep(2.0, 3.5)
+
+                try:
+                    human_scroll(page, steps=random.randint(1, 2), min_distance=150, max_distance=300)
+                except Exception:
+                    pass
+
+                # Locate the first feed update item
+                update_selectors = [
+                    "div.feed-shared-update-v2",
+                    "div[data-urn*='urn:li:activity']",
+                    "div.occludable-update",
+                ]
+
+                first_card = None
+                for sel in update_selectors:
+                    cards = page.locator(sel)
+                    if cards.count() > 0:
+                        first_card = cards.first
+                        break
+
+                if not first_card:
+                    logger.info("No recent activity updates detected on %s", profile_url)
+                    return None
+
+                # Extract URN / post ID
+                data_urn = first_card.get_attribute("data-urn") or ""
+                if not data_urn:
+                    urn_loc = first_card.locator("[data-urn*='urn:li:activity']").first
+                    if urn_loc.count() > 0:
+                        data_urn = urn_loc.get_attribute("data-urn") or ""
+
+                post_id = data_urn or ""
+                post_url = ""
+                if "urn:li:activity:" in data_urn:
+                    activity_id = data_urn.split("urn:li:activity:")[-1].split(":")[0]
+                    post_url = f"https://www.linkedin.com/feed/update/urn:li:activity:{activity_id}/"
+                    post_id = f"urn:li:activity:{activity_id}"
+                else:
+                    link_loc = first_card.locator("a[href*='/feed/update/']").first
+                    if link_loc.count() > 0:
+                        href = link_loc.get_attribute("href") or ""
+                        post_url = href.split("?")[0]
+                        post_id = post_url
+
+                if not post_url:
+                    post_url = activity_url
+
+                # Extract post text
+                text = ""
+                for text_sel in [
+                    ".feed-shared-update-v2__description",
+                    ".feed-shared-text",
+                    ".update-components-text",
+                    "div.feed-shared-inline-show-more-text",
+                    "span.break-words",
+                ]:
+                    t_loc = first_card.locator(text_sel).first
+                    if t_loc.count() > 0 and t_loc.is_visible():
+                        text = t_loc.inner_text().strip()
+                        if len(text) > 20:
+                            break
+
+                if not text:
+                    text = first_card.inner_text()[:600].strip()
+
+                time_text = ""
+                time_loc = first_card.locator(".feed-shared-actor__sub-description, time, span.feed-shared-actor__sub-description span").first
+                if time_loc.count() > 0:
+                    time_text = time_loc.inner_text().strip()
+
+                author = ""
+                author_loc = first_card.locator(".feed-shared-actor__name, span.update-components-actor__name, span[dir='ltr']").first
+                if author_loc.count() > 0:
+                    author = author_loc.inner_text().strip()
+
+                logger.info("Found latest post: ID=%s, Author=%s, Time=%s, Text len=%d", post_id, author, time_text, len(text))
+                return {
+                    "post_id": post_id,
+                    "post_url": post_url,
+                    "text": text,
+                    "author": author,
+                    "time_text": time_text,
+                }
+            except Exception as e:
+                logger.error("Error inspecting profile activity (%s): %s", profile_url, e)
+                return None
+            finally:
+                context.close()
+                if browser:
+                    browser.close()
+
+    def comment_on_post(self, post_url: str, comment_text: str) -> Dict[str, Any]:
+        """
+        Navigates to a specific LinkedIn post and publishes a sniper comment with humanized typing.
+        """
+        logger.info("Starting LinkedIn sniper comment publication on: %s", post_url)
+        state_file = self.sync_session_from_redis_or_disk()
+
+        with sync_playwright() as p:
+            launch_args = [
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+            ]
+            browser = None
+            if settings.PLAYWRIGHT_USER_DATA_DIR and Path(settings.PLAYWRIGHT_USER_DATA_DIR).exists():
+                context = p.chromium.launch_persistent_context(
+                    user_data_dir=settings.PLAYWRIGHT_USER_DATA_DIR,
+                    headless=self.headless,
+                    args=launch_args,
+                    viewport={"width": 1280, "height": 850},
+                    user_agent=PERSISTENT_USER_AGENT,
+                    locale="pt-BR",
+                    timezone_id="America/Sao_Paulo",
+                )
+                page = context.pages[0] if context.pages else context.new_page()
+            else:
+                browser = p.chromium.launch(headless=self.headless, args=launch_args)
+                context_kwargs = {
+                    "viewport": {"width": 1280, "height": 850},
+                    "user_agent": PERSISTENT_USER_AGENT,
+                    "locale": "pt-BR",
+                    "timezone_id": "America/Sao_Paulo",
+                }
+                if state_file:
+                    context_kwargs["storage_state"] = state_file
+                context = browser.new_context(**context_kwargs)
+                page = context.new_page()
+
+            context.add_init_script(STEALTH_EVASION_SCRIPT)
+
+            try:
+                self.ensure_authenticated(page, context)
+
+                logger.info("Opening post URL: %s", post_url)
+                page.goto(post_url, wait_until="domcontentloaded", timeout=30000)
+                human_sleep(2.5, 4.0)
+
+                try:
+                    human_scroll(page, steps=random.randint(2, 3), min_distance=150, max_distance=300)
+                except Exception:
+                    pass
+
+                # 1. Trigger comment box if needed
+                trigger_selectors = [
+                    "button[aria-label*='Comentar']",
+                    "button:has-text('Comentar')",
+                    "button:has-text('Comment')",
+                    "div.comments-comment-box",
+                ]
+                for sel in trigger_selectors:
+                    trig = page.locator(sel).first
+                    if trig.count() > 0 and trig.is_visible():
+                        try:
+                            human_click(page, trig)
+                            human_sleep(1.0, 2.0)
+                            break
+                        except Exception:
+                            pass
+
+                # 2. Locate editor area
+                editor_selectors = [
+                    "div.comments-comment-box__editor div[contenteditable='true']",
+                    "div.ql-editor[contenteditable='true']",
+                    "div[data-placeholder*='coment' i]",
+                    "div.editor-content[contenteditable='true']",
+                    "p.ql-editor",
+                    "div[contenteditable='true']",
+                ]
+
+                editor = None
+                for sel in editor_selectors:
+                    loc = page.locator(sel).first
+                    if loc.count() > 0 and loc.is_visible():
+                        editor = loc
+                        break
+
+                if not editor:
+                    shot_err = str(settings.downloads_path / f"comment_editor_not_found_{int(time.time())}.png")
+                    page.screenshot(path=shot_err)
+                    raise RuntimeError(f"Comment editor box not found on {post_url}. Screenshot saved: {shot_err}")
+
+                logger.info("Typing sniper comment into editor...")
+                human_click(page, editor)
+                human_sleep(0.5, 1.2)
+                human_type(page, editor, comment_text, min_delay_ms=25, max_delay_ms=65)
+                human_sleep(1.5, 2.5)
+
+                # 3. Locate submit button
+                submit_selectors = [
+                    "button.comments-comment-box__submit-button:enabled",
+                    "button:has-text('Publicar'):enabled",
+                    "button:has-text('Post'):enabled",
+                    "button.comments-comment-box__submit-button",
+                ]
+
+                submit_btn = None
+                for sel in submit_selectors:
+                    loc = page.locator(sel).first
+                    if loc.count() > 0 and loc.is_visible():
+                        submit_btn = loc
+                        break
+
+                if not submit_btn:
+                    shot_err = str(settings.downloads_path / f"comment_submit_not_found_{int(time.time())}.png")
+                    page.screenshot(path=shot_err)
+                    raise RuntimeError("Submit comment button not found or disabled.")
+
+                logger.info("Clicking submit comment button...")
+                human_click(page, submit_btn)
+                human_sleep(3.0, 5.0)
+
+                shot_success = str(settings.downloads_path / f"comment_success_{int(time.time())}.png")
+                page.screenshot(path=shot_success)
+                self.save_session_to_disk_and_redis(context)
+
+                logger.info("LinkedIn sniper comment successfully posted! Screenshot: %s", shot_success)
+                return {
+                    "status": "SUCCESS",
+                    "post_url": post_url,
+                    "comment_text": comment_text,
+                    "published_at": datetime.now().isoformat(),
+                    "screenshot": shot_success,
+                }
+            finally:
+                context.close()
+                if browser:
+                    browser.close()
+
 
 linkedin_publisher = LinkedInPublisher()
+
