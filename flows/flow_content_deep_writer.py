@@ -128,23 +128,26 @@ class ArtigoLinkedIn(BaseModel):
     )
     texto_post_divulgacao: str = Field(
         description=(
-            "Post de Alta Performance para o Feed do LinkedIn (Companion Post): "
-            "Hook magnético nas linhas 1-3 com quebra de expectativa terminando obrigatoriamente com a linha de transição e o emoji '👇'; "
-            "Corpo com parágrafos curtos de 1-2 linhas, espaçamento generoso, marcadores visuais (❌, 🔹, 1️⃣), "
-            "tradução do problema para o mundo dos negócios/gestão (impacto em dinheiro, reputação, compliance) "
-            "e contraponto propositivo de governança; "
-            "CTA com síntese inspiradora e pergunta provocativa para tomadores de decisão (gestores, sócios, diretores); "
-            "6 a 8 hashtags corporativas no rodapé."
+            "Post de Alto Engajamento e Viralidade para o Feed do LinkedIn: "
+            "1. Hook magnético nas primeiras 2 linhas com quebra de paradigma, contraste incômodo ou dado surpreendente "
+            "(sem clichês corporativos, sem 'No mundo de hoje', sem emoji '👇' forçado); "
+            "2. Linha em branco para forçar o clique em '...ver mais'; "
+            "3. Corpo com narrativa do especialista de campo: bastidores, dor real de engenharia/negócio, "
+            "fatos e lições práticas com escaneabilidade limpa (parágrafos curtos de 1-2 linhas, marcadores objetivos); "
+            "4. Conteúdo 100% autossuficiente (entrega o valor inteiro no post sem exigir clique externo); "
+            "5. CTA duplo de alta conversão: convite direto e natural para seguir o perfil para mais análises práticas "
+            "+ pergunta provocativa de experiência que instiga especialistas, sócios e gestores a debaterem nos comentários; "
+            "6. No máximo 2 a 3 hashtags de nicho ultra-focadas no final (nunca blocos longos de tags)."
         )
     )
     gancho_inicial: str = Field(
-        description="As primeiras 1 a 3 linhas do post no feed com dado surpreendente terminando com 👇"
+        description="As primeiras 1 ou 2 linhas do post que capturam a atenção e forçam o clique em 'ver mais' com contraste ou quebra de paradigma"
     )
     chamada_acao: str = Field(
-        description="Pergunta provocativa para gestores, sócios e diretores nos comentários"
+        description="Pergunta instigante de dor/experiência real para gerar debates longos nos comentários, somada a um convite sutil para seguir o perfil"
     )
     hashtags: List[str] = Field(
-        description="6 a 8 hashtags corporativas e estratégicas (ex: #DireitoDigital #InteligenciaArtificial #GovernancaCorporativa)"
+        description="2 a 3 hashtags corporativas e estratégicas de nicho (ex: #InteligenciaArtificial #EngenhariaDeSoftware)"
     )
     fontes_mencionadas: List[str] = Field(
         default_factory=list,
@@ -353,16 +356,22 @@ Para cada tema ou pauta recebida, gere SEMPRE o pacote completo nos seguintes fo
 
 #### CANAL 2: Artigo de Liderança & Post de Alta Performance para LinkedIn
 * **Artigo para o LinkedIn Pulse:**
-  * Artigo completo e aprofundado (600 a 1100+ palavras), em tom de Thought Leadership, estruturado com título de impacto, subtítulo executivo, tempo de leitura, subtítulos temáticos, narrativa profissional, citações de fontes e conclusão provocativa.
-* **Post de Alta Performance para o Feed (Companion Post):**
-  * **Estrutura Visual:** Parágrafos de uma ou duas linhas, espaçamento generoso e leitura dinâmica no mobile.
-  * **Hook (Linhas 1-3):** Dado surpreendente, quebra de expectativa ou contraste dramático. Termine sempre com uma linha de transição e o emoji: 👇
-  * **Corpo (Storytelling Executivo):**
-    * Apresentação rápida do fato ou dos casos com marcadores visuais (❌, 🔹, 1️⃣).
-    * A tradução do problema para o mundo dos negócios/gestão (o impacto em dinheiro, reputação ou risco de compliance).
-    * O contraponto propositivo: a estratégia correta de governança ou liderança.
-  * **CTA (Chamada Final):** Síntese inspiradora + Pergunta provocativa direcionada a tomadores de decisão (gestores, sócios, diretores).
-  * **Hashtags:** 6 a 8 hashtags corporativas e estratégicas no rodapé (ex.: #DireitoDigital #InteligenciaArtificial #GovernancaCorporativa).
+  * Artigo completo e aprofundado (600 a 1100+ palavras), em tom de Thought Leadership, estruturado com título de impacto, subtítulo executivo, tempo de leitura, subtítulos temáticos H2/H3, narrativa profissional com dados e referências factuais, citações ricas de fontes com links [Nome](URL) e conclusão provocativa. O corpo NÃO deve conter linhas separadoras ('---') nem repetir o título H1 principal.
+* **Post de Alto Engajamento e Crescimento de Seguidores para o Feed (Companion Post):**
+  * **Objetivo Primário:** Reter a atenção, converter leitores em seguidores qualificados e transformar a caixa de comentários em um polo de debate entre profissionais experientes (C-levels, gestores e engenheiros).
+  * **O Hook (Linhas 1-2):** Deve ser visceral, técnico ou contrariante. Quebre um consenso fácil da indústria, mostre o absurdo de um dado recente ou revele uma verdade desconfortável.
+    * ❌ ESTRITAMENTE PROIBIDO: Começar com "No mundo dinâmico da IA...", "Prepare-se para o choque...", ou terminar mecanicamente com "👇".
+    * ✅ EXEMPLOS DE ALTO IMPACTO: "A maioria das empresas não está implementando IA para inovar. Está usando para terceirizar a incompetência de gestão." ou "Em 2026, seu maior risco cibernético não é um exploit zero-day. É o script que seu time rodou às 23h sem validação."
+    * Deixe uma linha em branco após a linha 2 para forçar o clique no botão '...ver mais' do LinkedIn.
+  * **Corpo do Post (Escaneabilidade e Valor Autossuficiente):**
+    * NUNCA guarde o valor principal para um link externo. O post deve entregar a lição completa ali mesmo no feed.
+    * Parágrafos curtos de 1 a 2 linhas, com ritmo verbal ágil e espaço para respirar na tela do celular.
+    * Use marcadores visuais limpos (•, 1, 2, 3) para estruturar erros, dados ou regras de ouro.
+    * Mostre o lado prático da trincheira: o que funciona na bancada vs o que é só hype de vendas.
+  * **A Chamada Dupla para Ação (CTA de Seguidores + Debate de Dor):**
+    * 1. Convite de perfil: "Se você quer acompanhar bastidores reais de engenharia, automação e riscos práticos de IA sem o filtro do hype corporativo, me siga aqui no LinkedIn."
+    * 2. Pergunta de Debate de Dor Real: Questione sobre uma experiência prática que os leitores já viveram (ex: "Qual foi o maior débito técnico ou 'alucinação' que você já pegou em código de IA na sua empresa? Quero ouvir a sua experiência nos comentários.").
+  * **Hashtags:** Apenas 2 a 3 hashtags de nicho estritamente ligadas ao tema no rodapé (ex: #InteligenciaArtificial #EngenhariaDeSoftware).
 
 #### CANAL 3: Material de Apoio para Instagram
 * **1. Legenda para Post / Carrossel:**
@@ -399,6 +408,17 @@ Todos os prompts em **Inglês técnico**, orientados para Midjourney v6 / FLUX /
 2. **NUNCA seja puramente alarmista:** O perigo da tecnologia deve ser apontado, mas sempre acompanhado de um caminho de solução (governança, capacitação, auditoria, protocolos).
 3. **NUNCA faça artigos puramente conceituais:** Todo artigo DEVE conter pelo menos um exemplo fático, com nomes de órgãos, tribunais ou sistemas reais (ex.: TJRN, TJPR, TRT-8, Berna, Galileu, CNJ, OAB).
 4. **Preserve a temporalidade contextual:** Mantenha a coerência temporal com marcos recentes (ex.: Resolução CNJ 615/2025, iniciativas de 2026).
+5. **FILTRO ANTI-CLICHÊS DE IA (LISTA NEGATIVA ESTRITA):**
+   É estritamente proibido usar jargões artificiais e batidos de LLMs, como:
+   - "Em um mundo cada vez mais..."
+   - "No cenário atual..."
+   - "É imperativo que..."
+   - "Mergulhe fundo..."
+   - "Um verdadeiro divisor de águas..."
+   - "Em suma, ..." / "Em conclusão, ..."
+   - "Navegar pelas complexidades..."
+   - "O futuro já começou..."
+   Substitua sempre por linguagem direta de quem está na prática: "Na realidade da bancada", "O que ninguém avisa", "O custo real disso", "Testamos e vimos".
 """
 
 
@@ -738,7 +758,7 @@ def generate_deep_content_and_deliver(
         "   - CITE OBRIGATORIAMENTE as fontes no corpo do texto com hiperlinks Markdown [Nome da Fonte](URL) e crie no final a seção '## Referências e Fontes Consultadas'.\n\n"
         "2. CANAL 2: LINKEDIN PULSE & FEED:\n"
         "   - Artigo de Liderança LinkedIn Pulse (600 a 1100+ palavras): Título de impacto, subtítulo executivo, tempo de leitura, narrativa aprofundada com subtítulos temáticos H2/H3, citações ricas de fontes com links [Nome](URL) e conclusão provocativa. O corpo NÃO deve conter linhas separadoras ('---') nem repetir o título H1 principal.\n"
-        "   - Post de Alta Performance para o Feed (Companion Post): Hook nas linhas 1-3 terminando com a linha de transição e o emoji '👇', parágrafos curtos de 1-2 linhas, marcadores visuais (❌, 🔹, 1️⃣), tradução de valor de negócios, contraponto propositivo, CTA provocativo, convite com link para o blog antes do bloco de 6 a 8 hashtags corporativas. NUNCA inclua traços ou linhas de separação ('---').\n\n"
+        "   - Post de Alto Engajamento e Crescimento para o Feed (Companion Post): Hook contrariante e visceral nas linhas 1-2 (sem clichês de IA, sem emoji '👇' forçado), linha em branco para forçar o clique em 'ver mais', parágrafos curtos de 1-2 linhas, marcadores limpos, valor 100% autossuficiente no post, CTA duplo (convite direto para seguir o perfil + pergunta provocativa de dor real para explodir os comentários) e apenas 2 a 3 hashtags de nicho no rodapé. NUNCA inclua traços ou linhas de separação ('---').\n\n"
         "3. CANAL 3: MATERIAL PARA INSTAGRAM:\n"
         "   - Legenda para Post/Carrossel: Primeira linha com emoji em CAIXA ALTA, tópicos com 👉, 🚨, 🔍, e CTA clara para arrastar/salvar/compartilhar.\n"
         "   - 10 a 14 hashtags estratégicas equilibradas.\n"
