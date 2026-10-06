@@ -822,7 +822,85 @@ class LinkedInPublisher:
                 except Exception:
                     pass
 
-                # Locate the first feed update item
+                # Expand 'mais' / 'see more' buttons if any
+                more_btns = page.locator("button:has-text('mais'), button:has-text('see more')")
+                for i in range(min(3, more_btns.count())):
+                    try:
+                        b = more_btns.nth(i)
+                        if b.is_visible():
+                            b.click(timeout=1000)
+                    except Exception:
+                        pass
+
+                # Locate feed updates: supports both modern LinkedIn UI and classic selectors
+                update_links = page.locator("a[href*='/feed/update/']")
+                if update_links.count() > 0:
+                    first_link = update_links.first
+                    raw_href = first_link.get_attribute("href") or ""
+                    post_url = raw_href.split("?")[0]
+
+                    # Extract post ID
+                    post_id = post_url
+                    if "urn:li:" in post_url:
+                        urn_part = post_url.split("urn:li:")[-1].split("/")[0]
+                        post_id = f"urn:li:{urn_part}"
+
+                    extracted_data = first_link.evaluate("""(link) => {
+                        let el = link;
+                        let card = null;
+                        while (el && el !== document.body && el.tagName !== 'MAIN') {
+                            if (el.tagName === 'LI' || (el.parentElement && el.parentElement.tagName === 'MAIN')) {
+                                card = el;
+                                break;
+                            }
+                            if (el.offsetHeight > 100 && el.innerText.length > 50) {
+                                card = el;
+                            }
+                            el = el.parentElement;
+                        }
+                        if (!card) card = link.parentElement;
+
+                        // Author
+                        let author = '';
+                        const authorEl = card.querySelector('.update-components-actor__name, .feed-shared-actor__name, h3, strong');
+                        if (authorEl) {
+                            author = authorEl.innerText.trim();
+                        }
+
+                        // Time text
+                        let timeText = '';
+                        const timeMatch = card.innerText.match(/(\\d+\\s*(?:h|d|sem|m|min|mo|yr|a|s)\\b(?:\\s*•\\s*Editado)?)/i);
+                        if (timeMatch) {
+                            timeText = timeMatch[1];
+                        }
+
+                        // Text nodes sorted by length
+                        const textNodes = Array.from(card.querySelectorAll('span, p, div'))
+                            .map(n => n.innerText ? n.innerText.trim() : '')
+                            .filter(t => t.length > 40 && !t.includes('Seguir') && !t.includes('Conectar') && !t.includes('Todas as atividades'));
+                        textNodes.sort((a, b) => b.length - a.length);
+
+                        return {
+                            author: author,
+                            time_text: timeText,
+                            best_text: textNodes[0] || card.innerText
+                        };
+                    }""")
+
+                    author = extracted_data.get("author") or ""
+                    time_text = extracted_data.get("time_text") or ""
+                    text = extracted_data.get("best_text") or ""
+
+                    logger.info("Found latest post (modern UI): ID=%s, Author=%s, Time=%s, Text len=%d", post_id, author, time_text, len(text))
+                    return {
+                        "post_id": post_id,
+                        "post_url": post_url,
+                        "text": text,
+                        "author": author,
+                        "time_text": time_text,
+                    }
+
+                # Fallback: Classic feed selectors
                 update_selectors = [
                     "div.feed-shared-update-v2",
                     "div[data-urn*='urn:li:activity']",
@@ -1046,6 +1124,125 @@ class LinkedInPublisher:
                 if browser:
                     browser.close()
 
+    def like_post(self, post_url: str) -> Dict[str, Any]:
+        """
+        Navigates to a specific LinkedIn post and reacts/likes it if not already reacted.
+        """
+        logger.info("Starting LinkedIn like reaction on: %s", post_url)
+        state_file = self.sync_session_from_redis_or_disk()
+
+        with sync_playwright() as p:
+            launch_args = [
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+            ]
+            browser = None
+            if settings.PLAYWRIGHT_USER_DATA_DIR and Path(settings.PLAYWRIGHT_USER_DATA_DIR).exists():
+                context = p.chromium.launch_persistent_context(
+                    user_data_dir=settings.PLAYWRIGHT_USER_DATA_DIR,
+                    headless=self.headless,
+                    args=launch_args,
+                    viewport={"width": 1280, "height": 850},
+                    user_agent=PERSISTENT_USER_AGENT,
+                    locale="pt-BR",
+                    timezone_id="America/Sao_Paulo",
+                )
+                page = context.pages[0] if context.pages else context.new_page()
+            else:
+                browser = p.chromium.launch(headless=self.headless, args=launch_args)
+                context_kwargs = {
+                    "viewport": {"width": 1280, "height": 850},
+                    "user_agent": PERSISTENT_USER_AGENT,
+                    "locale": "pt-BR",
+                    "timezone_id": "America/Sao_Paulo",
+                }
+                if state_file:
+                    context_kwargs["storage_state"] = state_file
+                context = browser.new_context(**context_kwargs)
+                page = context.new_page()
+
+            context.add_init_script(STEALTH_EVASION_SCRIPT)
+
+            try:
+                self.ensure_authenticated(page, context)
+
+                logger.info("Opening post URL for like: %s", post_url)
+                page.goto(post_url, wait_until="domcontentloaded", timeout=30000)
+                human_sleep(2.0, 3.5)
+
+                try:
+                    human_scroll(page, steps=random.randint(1, 2), min_distance=100, max_distance=250)
+                except Exception:
+                    pass
+
+                # Locate like / reaction button
+                like_selectors = [
+                    "button.react-button__trigger",
+                    "button[aria-label*='Gostei' i]",
+                    "button[aria-label*='Reagir com Gostei' i]",
+                    "button[aria-label*='Like' i]",
+                    "button:has-text('Gostei')",
+                    "button:has-text('Like')",
+                    "span.reactions-react-button button",
+                ]
+
+                like_btn = None
+                for sel in like_selectors:
+                    loc = page.locator(sel).first
+                    if loc.count() > 0 and loc.is_visible():
+                        like_btn = loc
+                        break
+
+                if not like_btn:
+                    shot_err = str(settings.downloads_path / f"like_not_found_{int(time.time())}.png")
+                    page.screenshot(path=shot_err)
+                    raise RuntimeError(f"Like button not found on {post_url}. Screenshot saved: {shot_err}")
+
+                # Check if already liked
+                aria_pressed = (like_btn.get_attribute("aria-pressed") or "").lower()
+                btn_class = like_btn.get_attribute("class") or ""
+                btn_label = (like_btn.get_attribute("aria-label") or "").lower()
+                btn_text = (like_btn.inner_text() or "").lower()
+
+                if (
+                    aria_pressed == "true"
+                    or "react-button--active" in btn_class
+                    or "desfazer" in btn_label
+                    or "desfazer" in btn_text
+                ):
+                    logger.info("Post %s is already liked. Skipping click.", post_url)
+                    return {
+                        "status": "ALREADY_LIKED",
+                        "post_url": post_url,
+                        "liked_at": datetime.now().isoformat(),
+                    }
+
+                logger.info("Clicking like button...")
+                human_click(page, like_btn)
+                human_sleep(2.0, 3.5)
+
+                shot_success = str(settings.downloads_path / f"like_success_{int(time.time())}.png")
+                page.screenshot(path=shot_success)
+                self.save_session_to_disk_and_redis(context)
+
+                logger.info("LinkedIn post successfully liked! Screenshot: %s", shot_success)
+                return {
+                    "status": "SUCCESS",
+                    "post_url": post_url,
+                    "liked_at": datetime.now().isoformat(),
+                    "screenshot": shot_success,
+                }
+            except Exception as e:
+                logger.error("Failed to like LinkedIn post %s: %s", post_url, e)
+                raise
+            finally:
+                context.close()
+                if browser:
+                    browser.close()
+
 
 linkedin_publisher = LinkedInPublisher()
+
 

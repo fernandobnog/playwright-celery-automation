@@ -75,7 +75,7 @@ celery_app.conf.update(
     beat_schedule={
         "linkedin-sniper-radar-periodic": {
             "task": "flows.flow_linkedin_growth.task_linkedin_sniper_radar",
-            "schedule": crontab(minute="*/45", hour="8-19", day_of_week="1-5"),  # Every 45m business hours (Mon-Fri)
+            "schedule": crontab(minute="*/45", hour="6-22"),  # Every 45m from 06:00 to 22:59
             "options": {"queue": "flows"},
         },
         "check-links-nt-periodic": {

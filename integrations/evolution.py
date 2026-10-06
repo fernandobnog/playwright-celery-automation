@@ -118,6 +118,21 @@ class EvolutionClient:
             resp.raise_for_status()
             return resp.json()
 
+    def send_message(self, phone: str, text: str) -> Dict[str, Any]:
+        """
+        Synchronous helper to send plain text WhatsApp messages (ideal for Celery tasks).
+        """
+        normalized = format_brazilian_phone(phone)
+        url = f"{self.base_url}/message/sendText/{self.instance}"
+        payload = {
+            "number": normalized,
+            "text": text,
+        }
+        with httpx.Client(timeout=self.timeout) as client:
+            resp = client.post(url, headers=self.headers, json=payload)
+            resp.raise_for_status()
+            return resp.json()
+
     async def send_media_message(
         self,
         phone: str,

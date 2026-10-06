@@ -23,3 +23,5 @@ gspread>=6.1.0
 pillow>=10.0.0
 markdown>=3.6.0
 dnspython>=2.6.0
+cognee>=1.6.0
+

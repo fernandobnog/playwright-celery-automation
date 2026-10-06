@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     EVOLUTION_API_KEY: str = ""
     EVOLUTION_INSTANCE: str = "Fernando-Pessoal"
     NOTIFICATION_PHONE: str = "5519998256557"
+    EDITORIAL_WHATSAPP_RECIPIENT: str | None = None
 
     # Twenty CRM
     TWENTY_CRM_URL: str = "http://twenty_server:3000/rest"

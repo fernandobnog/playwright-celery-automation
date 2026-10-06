@@ -104,3 +104,55 @@ def test_generate_sniper_comment_mocked():
     assert "débito técnico" in res.comentario
     assert res.angulo_utilizado == "contraponto técnico"
     mock_gemini.generate_structured.assert_called_once()
+
+
+def test_style_memory_and_comment_editing(tmp_path):
+    from flows.flow_linkedin_growth import refine_sniper_comment
+    db_file = tmp_path / "test_memory.db"
+    test_repo = PipelineRepository(db_path=str(db_file))
+
+    # Save a draft comment
+    c_id = test_repo.save_linkedin_growth_comment(
+        target_id=1,
+        target_nome="Daniel Becker",
+        post_url="https://www.linkedin.com/feed/update/urn:li:activity:77777/",
+        post_texto="Discussão profunda sobre agentes autônomos em escritórios de advocacia.",
+        post_autor="Daniel Becker",
+        comentario_gerado="Comentário longo e prolixo inicial gerado pela IA...",
+    )
+
+    # 1. Edit comment manually
+    new_text = "Ponto cirúrgico, Daniel. Aqui na prática vemos que sem dados limpos o agente não para de alucinar."
+    ok_edit = test_repo.update_linkedin_growth_comment_text(c_id, new_text)
+    assert ok_edit is True
+
+    c_updated = test_repo.get_linkedin_growth_comment_by_id(c_id)
+    assert c_updated["comentario_gerado"] == new_text
+
+    # 2. Record to style memory
+    ok_mem = test_repo.record_style_memory(c_id, new_text, instrucao="mais curto e direto")
+    assert ok_mem is True
+
+    # 3. Retrieve style examples
+    examples = test_repo.get_style_examples(limit=5)
+    assert len(examples) == 1
+    assert examples[0]["comentario_final"] == new_text
+    assert examples[0]["foi_editado"] == 1
+
+    # 4. Refine with mocked Gemini
+    mock_gemini = MagicMock()
+    mock_gemini.generate_structured.return_value = SniperCommentResult(
+        comentario="Cirúrgico, Daniel. Na bancada a gente vê que sem dados limpos o agente falha rápido.",
+        tese_central="Agentes autônomos precisam de dados",
+        angulo_utilizado="vivência prática",
+    )
+    refine_res = refine_sniper_comment(
+        post_text="Discussão profunda sobre agentes autônomos...",
+        current_comment=new_text,
+        instruction="deixa mais curto",
+        author_name="Daniel Becker",
+        gemini_client=mock_gemini,
+    )
+    assert "Cirúrgico" in refine_res.comentario
+    mock_gemini.generate_structured.assert_called_once()
+

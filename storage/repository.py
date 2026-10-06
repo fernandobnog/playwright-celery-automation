@@ -141,8 +141,23 @@ class PipelineRepository:
                     FOREIGN KEY(target_id) REFERENCES linkedin_growth_targets(id)
                 );
 
+                CREATE TABLE IF NOT EXISTS linkedin_style_memory (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    comment_id INTEGER,
+                    post_url TEXT,
+                    post_texto TEXT NOT NULL,
+                    post_autor TEXT,
+                    nicho TEXT,
+                    sugestao_ia TEXT NOT NULL,
+                    comentario_final TEXT NOT NULL,
+                    instrucao_ajuste TEXT,
+                    foi_editado BOOLEAN DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_linkedin_targets_ativo ON linkedin_growth_targets(ativo);
                 CREATE INDEX IF NOT EXISTS idx_linkedin_comments_status ON linkedin_growth_comments(status);
+                CREATE INDEX IF NOT EXISTS idx_linkedin_style_memory_nicho ON linkedin_style_memory(nicho);
             """)
             conn.commit()
             self._backfill_editorial_publications(conn)
@@ -879,6 +894,115 @@ class PipelineRepository:
             )
             return [dict(row) for row in cursor.fetchall()]
 
+    def update_linkedin_growth_comment_text(self, comment_id: int, new_text: str) -> bool:
+        """Updates the comment generated text before approval/publication."""
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                "UPDATE linkedin_growth_comments SET comentario_gerado = ? WHERE id = ?",
+                (new_text.strip(), comment_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def record_style_memory(
+        self,
+        comment_id: int,
+        final_comment: str,
+        instrucao: Optional[str] = None,
+        foi_editado: Optional[bool] = None,
+    ) -> bool:
+        """
+        Stores an approved or edited comment into the style memory so the AI
+        learns to write exactly like Fernando over time.
+        """
+        with self._get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT c.*, t.nicho 
+                FROM linkedin_growth_comments c
+                LEFT JOIN linkedin_growth_targets t ON c.target_id = t.id
+                WHERE c.id = ?
+                """,
+                (comment_id,),
+            ).fetchone()
+            if not row:
+                return False
+
+            original_suggestion = row["comentario_gerado"] or ""
+            if foi_editado is not None:
+                is_edited_val = 1 if foi_editado else 0
+            else:
+                is_edited_val = 1 if (instrucao or final_comment.strip() != original_suggestion.strip()) else 0
+
+            conn.execute(
+                """
+                INSERT INTO linkedin_style_memory (
+                    comment_id, post_url, post_texto, post_autor, nicho,
+                    sugestao_ia, comentario_final, instrucao_ajuste, foi_editado
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    comment_id,
+                    row["post_url"],
+                    row["post_texto"],
+                    row["post_autor"],
+                    row["nicho"] if "nicho" in row.keys() else "GERAL",
+                    original_suggestion,
+                    final_comment.strip(),
+                    instrucao,
+                    is_edited_val,
+                ),
+            )
+            conn.commit()
+
+            # Record in self-hosted Cognee (Vector + Graph) for semantic recall
+            try:
+                from integrations.cognee_service import cognee_service
+                cognee_service.record_style_preference(
+                    post_text=row["post_texto"] or "",
+                    final_comment=final_comment.strip(),
+                    author=row["post_autor"],
+                    nicho=row["nicho"] if "nicho" in row.keys() else "GERAL",
+                    feedback=instrucao,
+                )
+            except Exception as cognee_err:
+                logger.debug("Could not record preference in Cognee: %s", cognee_err)
+
+            return True
+
+    def get_style_examples(self, limit: int = 3, nicho: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Retrieves recent authentic comment examples (prioritizing human-edited ones)
+        to inject as few-shot in-context learning.
+        """
+        with self._get_connection() as conn:
+            if nicho:
+                cursor = conn.execute(
+                    """
+                    SELECT post_texto, post_autor, comentario_final, foi_editado
+                    FROM linkedin_style_memory
+                    WHERE nicho = ?
+                    ORDER BY foi_editado DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (nicho, limit),
+                )
+                rows = cursor.fetchall()
+                if len(rows) >= limit:
+                    return [dict(r) for r in rows]
+
+            # Fallback / General
+            cursor = conn.execute(
+                """
+                SELECT post_texto, post_autor, comentario_final, foi_editado
+                FROM linkedin_style_memory
+                ORDER BY foi_editado DESC, id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            return [dict(r) for r in cursor.fetchall()]
+
     def get_linkedin_growth_stats(self) -> Dict[str, int]:
         """Summary metrics for the LinkedIn Growth engine."""
         with self._get_connection() as conn:
@@ -891,7 +1015,8 @@ class PipelineRepository:
                     COUNT(*) as total_comments,
                     SUM(CASE WHEN status = 'PENDING_APPROVAL' THEN 1 ELSE 0 END) as pending,
                     SUM(CASE WHEN status = 'APPROVED' THEN 1 ELSE 0 END) as approved,
-                    SUM(CASE WHEN status = 'PUBLISHED' THEN 1 ELSE 0 END) as published
+                    SUM(CASE WHEN status = 'PUBLISHED' THEN 1 ELSE 0 END) as published,
+                    SUM(CASE WHEN status = 'LIKED' THEN 1 ELSE 0 END) as liked
                 FROM linkedin_growth_comments
                 """
             ).fetchone()
@@ -902,8 +1027,10 @@ class PipelineRepository:
                 "pending_comments": (row_comments["pending"] if row_comments else 0) or 0,
                 "approved_comments": (row_comments["approved"] if row_comments else 0) or 0,
                 "published_comments": (row_comments["published"] if row_comments else 0) or 0,
+                "liked_comments": (row_comments["liked"] if row_comments else 0) or 0,
             }
 
 
 repo = PipelineRepository()
+
 

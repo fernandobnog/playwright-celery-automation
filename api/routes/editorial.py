@@ -1787,6 +1787,108 @@ async def approve_linkedin_comment(token: str = Query(..., description="Action t
     )
 
 
+@router.get("/linkedin-comment/like", response_class=HTMLResponse)
+async def like_linkedin_post_from_token(token: str = Query(..., description="Action token for liking post")):
+    """
+    1-click reaction link from WhatsApp/email to only like the LinkedIn post.
+    """
+    from flows.flow_linkedin_growth import task_like_approved_linkedin_post
+
+    payload = verify_linkedin_comment_action_token(token)
+    if not payload:
+        return HTMLResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content="""<!DOCTYPE html><html><body style="font-family:sans-serif;background:#0f172a;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;">
+            <div style="background:#1e293b;padding:32px;border-radius:12px;max-width:480px;text-align:center;">
+            <h2 style="color:#ef4444;">Token Inválido ou Expirado</h2>
+            <p style="color:#94a3b8;">O link para curtir esta publicação expirou ou já foi utilizado.</p>
+            </div></body></html>""",
+        )
+
+    comment_id = payload.get("comment_id")
+    comment = repo.get_linkedin_growth_comment_by_id(comment_id)
+    if not comment:
+        return HTMLResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content="""<!DOCTYPE html><html><body style="font-family:sans-serif;background:#0f172a;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;">
+            <div style="background:#1e293b;padding:32px;border-radius:12px;max-width:480px;text-align:center;">
+            <h2 style="color:#f59e0b;">Publicação Não Encontrada</h2>
+            <p style="color:#94a3b8;">O registro deste post não foi localizado no banco de dados.</p>
+            </div></body></html>""",
+        )
+
+    async_task = task_like_approved_linkedin_post.delay(comment_id)
+    repo.update_linkedin_growth_comment_status(comment_id, "LIKED")
+
+    return HTMLResponse(
+        content=f"""<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Post Curtido | OmniFlow LinkedIn Sniper</title>
+    <style>
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #0f172a;
+            color: #f8fafc;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+        }}
+        .card {{
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 16px;
+            padding: 32px;
+            max-width: 520px;
+            width: 100%;
+            text-align: center;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+        }}
+        .icon {{
+            font-size: 48px;
+            margin-bottom: 16px;
+        }}
+        h1 {{
+            font-size: 24px;
+            margin: 0 0 8px 0;
+            color: #38bdf8;
+        }}
+        p {{
+            color: #94a3b8;
+            font-size: 15px;
+            line-height: 1.5;
+            margin: 0 0 20px 0;
+        }}
+        .btn {{
+            display: inline-block;
+            background: #0284c7;
+            color: white;
+            text-decoration: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 14px;
+        }}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="icon">👍</div>
+        <h1>Publicação Marcada para Curtir!</h1>
+        <p>O Playwright está acessando o LinkedIn para curtir o post de <strong>{html.escape(comment['target_nome'])}</strong> sem publicar comentários.</p>
+        <a href="{html.escape(comment['post_url'])}" target="_blank" class="btn">Abrir Post no LinkedIn ↗</a>
+    </div>
+</body>
+</html>"""
+    )
+
+
+
 @router.get("/linkedin-targets")
 async def list_linkedin_targets():
     """
@@ -1881,6 +1983,89 @@ async def direct_approve_linkedin_comment(comment_id: int):
         "task_id": async_task.id,
         "comment_id": comment_id,
         "message": "Comentário aprovado! Publicação em andamento pelo Playwright.",
+    }
+
+
+@router.post("/linkedin-comments/{comment_id}/like")
+async def direct_like_linkedin_post(comment_id: int):
+    """
+    Directly likes the target post without publishing a comment.
+    """
+    from flows.flow_linkedin_growth import task_like_approved_linkedin_post
+    comment = repo.get_linkedin_growth_comment_by_id(comment_id)
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comentário não encontrado.")
+
+    async_task = task_like_approved_linkedin_post.delay(comment_id)
+    repo.update_linkedin_growth_comment_status(comment_id, "LIKED")
+    return {
+        "status": "SUCCESS",
+        "task_id": async_task.id,
+        "comment_id": comment_id,
+        "message": "Reação de Curtir enviada! Execução em andamento pelo Playwright.",
+    }
+
+
+class LinkedInCommentEditRequest(BaseModel):
+    comentario: str
+
+
+@router.post("/linkedin-comments/{comment_id}/edit")
+async def edit_linkedin_comment(comment_id: int, payload: LinkedInCommentEditRequest):
+    """
+    Updates the text of a pending sniper comment and saves to style memory.
+    """
+    comment = repo.get_linkedin_growth_comment_by_id(comment_id)
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comentário não encontrado.")
+    
+    if not payload.comentario or not payload.comentario.strip():
+        raise HTTPException(status_code=400, detail="O comentário não pode ser vazio.")
+        
+    repo.update_linkedin_growth_comment_text(comment_id, payload.comentario.strip())
+    repo.record_style_memory(comment_id, payload.comentario.strip(), foi_editado=True)
+    
+    updated = repo.get_linkedin_growth_comment_by_id(comment_id)
+    return {
+        "status": "SUCCESS",
+        "comment": updated,
+        "message": "Comentário atualizado e memória de estilo salva!",
+    }
+
+
+class LinkedInCommentRefineRequest(BaseModel):
+    instrucao: str
+
+
+@router.post("/linkedin-comments/{comment_id}/refine")
+async def refine_linkedin_comment_with_ai(comment_id: int, payload: LinkedInCommentRefineRequest):
+    """
+    Refines a comment suggestion using Gemini based on human instruction.
+    """
+    from flows.flow_linkedin_growth import refine_sniper_comment
+    comment = repo.get_linkedin_growth_comment_by_id(comment_id)
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comentário não encontrado.")
+
+    if not payload.instrucao or not payload.instrucao.strip():
+        raise HTTPException(status_code=400, detail="A instrução de refinamento é obrigatória.")
+
+    refinement = refine_sniper_comment(
+        post_text=comment["post_texto"],
+        current_comment=comment["comentario_gerado"],
+        instruction=payload.instrucao.strip(),
+        author_name=comment["target_nome"],
+    )
+
+    repo.update_linkedin_growth_comment_text(comment_id, refinement.comentario)
+    repo.record_style_memory(comment_id, refinement.comentario, instrucao=payload.instrucao.strip())
+    updated = repo.get_linkedin_growth_comment_by_id(comment_id)
+    return {
+        "status": "SUCCESS",
+        "comment": updated,
+        "new_comentario": refinement.comentario,
+        "tese_central": refinement.tese_central,
+        "message": "Comentário refinado pela IA com sucesso!",
     }
 
 
