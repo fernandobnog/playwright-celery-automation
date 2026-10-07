@@ -1110,36 +1110,26 @@ class LinkedInPublisher:
                 page.goto(post_url, wait_until="domcontentloaded", timeout=30000)
                 human_sleep(2.5, 4.0)
 
+                # Wait for post content or main container to settle
                 try:
-                    human_scroll(page, steps=random.randint(2, 3), min_distance=150, max_distance=300)
+                    page.wait_for_selector("div.feed-shared-update-v2, article, main, div.core-rail", timeout=15000)
                 except Exception:
                     pass
 
-                # 1. Trigger comment box if needed
-                trigger_selectors = [
-                    "button[aria-label*='Comentar']",
-                    "button:has-text('Comentar')",
-                    "button:has-text('Comment')",
-                    "div.comments-comment-box",
-                ]
-                for sel in trigger_selectors:
-                    trig = page.locator(sel).first
-                    if trig.count() > 0 and trig.is_visible():
-                        try:
-                            human_click(page, trig)
-                            human_sleep(1.0, 2.0)
-                            break
-                        except Exception:
-                            pass
+                try:
+                    human_scroll(page, steps=random.randint(1, 2), min_distance=150, max_distance=300)
+                except Exception:
+                    pass
 
-                # 2. Locate editor area
+                # 1. Locate editor if already open, or trigger comment box
                 editor_selectors = [
+                    "div[aria-label*='coment' i][contenteditable='true']",
                     "div.comments-comment-box__editor div[contenteditable='true']",
                     "div.ql-editor[contenteditable='true']",
-                    "div[data-placeholder*='coment' i]",
+                    "div.comments-comment-texteditor div[contenteditable='true']",
                     "div.editor-content[contenteditable='true']",
-                    "p.ql-editor",
-                    "div[contenteditable='true']",
+                    "div[data-placeholder*='coment' i]",
+                    "div[role='textbox'][contenteditable='true']:not(#msg-overlay *)",
                 ]
 
                 editor = None
@@ -1150,30 +1140,78 @@ class LinkedInPublisher:
                         break
 
                 if not editor:
+                    trigger_selectors = [
+                        "button[aria-label*='Comentar' i]",
+                        "button:has-text('Comentar')",
+                        "button:has-text('Comment')",
+                        "div.comments-comment-box",
+                    ]
+                    for sel in trigger_selectors:
+                        trig = page.locator(sel).first
+                        if trig.count() > 0:
+                            try:
+                                trig.scroll_into_view_if_needed(timeout=5000)
+                                human_sleep(0.5, 1.0)
+                                human_click(page, trig)
+                                human_sleep(1.5, 2.5)
+                                break
+                            except Exception as err_trig:
+                                logger.debug("Could not click trigger %s: %s", sel, err_trig)
+
+                    # Re-check editor after clicking trigger
+                    for sel in editor_selectors:
+                        loc = page.locator(sel).first
+                        if loc.count() > 0 and loc.is_visible():
+                            editor = loc
+                            break
+
+                if not editor:
                     shot_err = str(settings.downloads_path / f"comment_editor_not_found_{int(time.time())}.png")
                     page.screenshot(path=shot_err)
                     raise RuntimeError(f"Comment editor box not found on {post_url}. Screenshot saved: {shot_err}")
 
                 logger.info("Typing sniper comment into editor...")
+                editor.scroll_into_view_if_needed(timeout=5000)
                 human_click(page, editor)
                 human_sleep(0.5, 1.2)
                 human_type(page, editor, comment_text, min_delay_ms=25, max_delay_ms=65)
                 human_sleep(1.5, 2.5)
 
                 # 3. Locate submit button
-                submit_selectors = [
-                    "button.comments-comment-box__submit-button:enabled",
-                    "button:has-text('Publicar'):enabled",
-                    "button:has-text('Post'):enabled",
-                    "button.comments-comment-box__submit-button",
-                ]
-
                 submit_btn = None
-                for sel in submit_selectors:
-                    loc = page.locator(sel).first
-                    if loc.count() > 0 and loc.is_visible():
-                        submit_btn = loc
-                        break
+
+                # Method A: Look inside the ancestor comment box/form/feed update
+                try:
+                    candidates = editor.locator("xpath=ancestor::*[contains(@class, 'comment') or contains(@class, 'feed-shared') or self::form]//button").all()
+                    for b in candidates:
+                        txt = b.inner_text().strip().lower()
+                        if txt in ["comentar", "publicar", "post", "comment"] and b.is_enabled():
+                            submit_btn = b
+                            logger.info("Located submit button inside ancestor container: '%s'", txt)
+                            break
+                except Exception as err_cand:
+                    logger.debug("Ancestor button search failed: %s", err_cand)
+
+                # Method B: Global selectors with Portuguese and English button texts
+                if not submit_btn:
+                    submit_selectors = [
+                        "button:has-text('Comentar'):enabled",
+                        "button:has-text('Publicar'):enabled",
+                        "button:has-text('Post'):enabled",
+                        "button:has-text('Comment'):enabled",
+                        "button.comments-comment-box__submit-button:enabled",
+                        "button[aria-label*='Publicar' i]:enabled",
+                    ]
+                    for sel in submit_selectors:
+                        candidates = page.locator(sel).all()
+                        for loc in candidates:
+                            txt = loc.inner_text().strip().lower()
+                            if (txt in ["comentar", "publicar", "post", "comment"] or "submit" in (loc.get_attribute("class") or "")) and loc.is_enabled() and loc.is_visible():
+                                submit_btn = loc
+                                logger.info("Located submit button via selector '%s': '%s'", sel, txt)
+                                break
+                        if submit_btn:
+                            break
 
                 if not submit_btn:
                     shot_err = str(settings.downloads_path / f"comment_submit_not_found_{int(time.time())}.png")
@@ -1181,8 +1219,9 @@ class LinkedInPublisher:
                     raise RuntimeError("Submit comment button not found or disabled.")
 
                 logger.info("Clicking submit comment button...")
+                submit_btn.scroll_into_view_if_needed(timeout=5000)
                 human_click(page, submit_btn)
-                human_sleep(3.0, 5.0)
+                human_sleep(3.5, 5.5)
 
                 shot_success = str(settings.downloads_path / f"comment_success_{int(time.time())}.png")
                 page.screenshot(path=shot_success)

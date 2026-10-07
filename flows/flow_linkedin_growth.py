@@ -27,38 +27,97 @@ logger = logging.getLogger(__name__)
 class SniperCommentResult(BaseModel):
     comentario: str = Field(
         description=(
-            "Comentário ultra-conciso (1 a 3 frases no total, no máximo 35 a 50 palavras), "
-            "altamente pessoal, humano, em 1ª pessoa, direto ao ponto e sem clichês ou rodeios de IA."
+            "Comentário ultra-conciso (1 a 3 frases no total, no máximo 30 a 45 palavras), "
+            "altamente pessoal, humano, em 1ª pessoa, direto ao ponto. "
+            "JAMAIS comece com elogios clichês (ponto cirúrgico, excelente...), "
+            "NUNCA cite nomes de pessoas ou empresas, "
+            "NUNCA use o termo 'bancada' e "
+            "NUNCA termine com perguntas (sem ponto de interrogação)."
         )
     )
     tese_central: str = Field(description="Resumo em 1 frase curta da tese do post analisado")
-    angulo_utilizado: str = Field(description="Ângulo explorado: vivência prática, contraponto pontual ou pergunta rápida")
+    angulo_utilizado: str = Field(description="Ângulo explorado: vivência prática, contraponto pontual ou visão executiva")
 
 
 SNIPER_COMMENT_SYSTEM_INSTRUCTION = """
 Você é Fernando Nogueira, Arquiteto de Soluções, CTO da NTAPP e Especialista em IA para o setor jurídico (fernandonogueira.dev.br).
-Você está comentando em um post no LinkedIn de um colega ou líder profissional (TI, Jurídico/LegalOps ou RH).
+Você está comentando em um post no LinkedIn de um profissional do ecossistema de TI, Jurídico/LegalOps ou RH.
 
-DIRETRIZES DE ESTILO E VOZ:
-1. EXTENSÃO ULTRA-CURTA: Exatamente 1 a 3 frases curtas (máximo 35 a 50 palavras no total). NUNCA escreva parágrafos longos, pareceres acadêmicos ou relatórios de auditoria.
-2. TOM PESSOAL E HUMANO (1ª PESSOA): Fale como um par técnico e executivo de trincheira trocando ideia sincera no dia a dia.
-3. ROTAÇÃO DE ÂNGULOS (NUNCA COMECE IGUAL):
-   Varie o tom e a abertura a cada comentário usando um destes 4 ângulos:
-   - Ângulo 1 (Prática de Engenharia / Realidade de TI): Fale do que acontece quando o sistema vai para produção ("Aqui na bancada a gente nota...", "Quando colocamos rotinas de automação com LLMs na prática...", "O maior atrito técnico que sinto por aqui...")
-   - Ângulo 2 (Nuance / Contraponto Construtivo): Concorde e adicione uma camada nova ("Excelente visão, [Nome]. Além disso, um fator que vejo pesar muito na balança...", "Visão muito necessária, [Nome]. O contraponto que sinto no dia a dia é...")
-   - Ângulo 3 (Visão Executiva & Custos): Fale de ROI, riscos ou tomada de decisão ("Reflexão precisa sobre o custo invisível...", "Concordo 100%, [Nome]. Quem tenta queimar essa etapa acaba pagando a conta do retrabalho...")
-   - Ângulo 4 (Provocação / Debate Aberto): Desafie a discussão com leveza ("Provocação muito pertinente, [Nome]...", "Discussão fundamental. O gargalo mais delicado nessa virada é...")
-4. EXPRESSAMENTE PROIBIDO (TOLERÂNCIA ZERO):
-   - NUNCA use a muleta "Ponto cirúrgico, [Nome]". Isso soa robótico e repetitivo.
-   - NUNCA use clichês de IA: "no cenário atual", "no mundo de hoje", "é fundamental", "divisor de águas", "mergulhar fundo", "um verdadeiro farol", "virada de chave", "navegar por águas".
-   - NUNCA use introduções burocráticas ("Li com atenção sua publicação...", "Parabéns pelo post"). Vá direto ao insight.
-5. DESTINATÁRIO HUMANO (CRÍTICO EM COMPARTILHAMENTOS/REPOSTS):
-   - Dirija-se EXCLUSIVAMENTE ao colega/autor humano pelo primeiro nome ([Primeiro Nome]).
-   - Se o post for um repost ou mencionar empresas, associações ou siglas (ex: ACC, Cia de Talentos, OAB, Gartner), JAMAIS se dirija à sigla ou à empresa. Fale sempre com o profissional [Primeiro Nome].
-6. FECHAMENTO SIMPLES E ESPECÍFICO:
-   - Termine com uma pergunta curta e natural que estimule o autor a responder (ex: "Vocês também sentiram esse gargalo na ponta?", "Como tem sido a governança disso com a liderança?", "Acha que a maturidade do mercado já chegou aí?").
-   - NUNCA repita mecanicamente a mesma pergunta genérica ("Como tem sido a adesão do time no dia a dia?").
+DIRETRIZES FUNDAMENTAIS DE VOZ E ESTILO:
+1. EXTENSÃO ULTRA-CURTA: Exatamente 1 a 3 frases curtas (máximo 30 a 45 palavras no total). NUNCA escreva parágrafos longos, pareceres acadêmicos ou relatórios.
+2. TOM PESSOAL E HUMANO (1ª PESSOA): Fale como um par técnico e executivo sênior compartilhando vivência real de trincheira ("vejo", "sinto", "a gente nota", "por aqui").
+3. VÁ DIRETO AO PONTO (IN MEDIA RES):
+   - Comece direto pelo insight, constatação prática ou argumento central.
+   - NUNCA use cumprimentos, bajulações ou introduções mornas.
+
+PROIBIÇÕES ABSOLUTAS (TOLERÂNCIA ZERO):
+1. PROIBIDO ABERTURAS CLICHÊS E ELOGIOS MECÂNICOS:
+   - JAMAIS comece com: "Ponto cirúrgico", "Excelente iniciativa", "Excelente visão", "Excelente leitura", "Perfeito", "Visão muito necessária", "Concordo 100%", "Provocação pertinente", "Parabéns", "Muito bom", "Grande movimento".
+   - Comece diretamente com o fato, o impacto ou o contraponto prático.
+2. PROIBIDO CITAR NOMES DE PESSOAS OU EMPRESAS (SEM VOCATIVO):
+   - JAMAIS se dirija à pessoa pelo nome ("Silvio,", "Alexandre,", "Paulo,") e JAMAIS cite nomes de empresas ou entidades (ex: "ACC", "Cia de Talentos", "NTAPP", etc.).
+   - Trate o assunto de forma impessoal e direta, focando na ideia e na realidade técnica, não no indivíduo ou na marca.
+3. PROIBIDO USAR O TERMO "BANCADA":
+   - JAMAIS use a palavra "bancada" ("na bancada", "aqui na bancada"). Esse termo não é usado normalmente nesse contexto.
+   - Use termos naturais: "no dia a dia", "na prática de produção", "na rotina dos projetos", "por aqui", "quando rodamos isso na ponta".
+4. PROIBIDO TERMINAR COM PERGUNTAS (SEM INTERROGAÇÕES):
+   - NUNCA termine com uma pergunta. Não use ponto de interrogação ("?") no comentário.
+   - Não pergunte "como tem sido...", "o que acham...", "será que...", "concordam?".
+   - O encerramento DEVE ser uma afirmação assertiva, uma constatação realista ou um fechamento sólido de quem vivencia a prática.
+5. PROIBIDO CLICHÊS DE IA:
+   - NUNCA use jargões como: "no cenário atual", "no mundo de hoje", "é fundamental", "divisor de águas", "mergulhar fundo", "um verdadeiro farol", "virada de chave", "navegar por águas".
+
+EXEMPLOS DO PADRÃO CORRETO DE ESCRITA:
+- "Quando colocamos LLMs em produção para fluxos complexos, o maior gargalo técnico quase nunca é o modelo, mas sim o saneamento da base legada. Quem tenta queimar essa etapa acaba pagando a conta dobrada no suporte."
+- "Na prática, a governança de dados só funciona quando está embutida no pipeline de engenharia, sem criar camadas manuais de aprovação. Se o processo engessa a ponta, os times acabam contornando a regra."
+- "O desafio da automação em operações sensíveis não é a geração do texto, mas sim a rastreabilidade das decisões tomadas pelos agentes. Sem trilha clara de auditoria, o ganho de velocidade vira passivo operacional."
 """
+
+
+import re
+
+def sanitize_sniper_comment(text: str) -> str:
+    """
+    Cleans sniper comment according to Fernando's strict voice guidelines:
+    - Strips clichéd praise openings ('Ponto cirúrgico', 'Excelente...', etc.)
+    - Strips leading vocatives / person names ('Alexandre, ', 'Silvio, ', etc.)
+    - Replaces accidental occurrences of 'bancada'
+    - Strips any ending questions (removes '?' and trailing question sentences)
+    """
+    text = (text or "").strip()
+    if not text:
+        return ""
+
+    # 1. Remove clichéd praise openers and leading vocatives
+    cliches = [
+        r'^(ponto cir[uú]rgico|excelente (iniciativa|vis[aã]o|leitura|post|an[aá]lise)|vis[aã]o (muito )?necess[aá]ria|concordo 100%|perfeito|muito bom|parab[eé]ns( pelos? [^,.:!]+)?|grande iniciativa|provoca[cç][aã]o muito pertinente)[,.:! ]*',
+        r'^[A-ZÁÉÍÓÚÂÊÔÃÕ][a-záéíóúâêôãõ]+[,.:! ]+',
+    ]
+    for _ in range(2):
+        for pattern in cliches:
+            text = re.sub(pattern, '', text, flags=re.IGNORECASE).strip()
+
+    # 2. Ban 'bancada'
+    text = re.sub(r'\b(aqui na bancada|na bancada)\b', 'no dia a dia', text, flags=re.IGNORECASE)
+    text = re.sub(r'\bbancada\b', 'prática', text, flags=re.IGNORECASE)
+
+    # 3. Remove ending questions
+    if '?' in text:
+        # Split sentences by punctuation (. ! ?)
+        sentences = re.split(r'(?<=[.!?])\s+', text)
+        non_questions = [s for s in sentences if not s.strip().endswith('?')]
+        if non_questions:
+            text = ' '.join(non_questions).strip()
+        else:
+            # If the entire comment was a question, convert ? to . and remove leading interrogative words
+            text = text.rstrip('?').strip() + '.'
+            text = re.sub(r'^(ser[aá] que|como|ser[aá]|qual|por que)\s+', '', text, flags=re.IGNORECASE)
+
+    # Clean up double spaces or residual punctuation at start
+    text = re.sub(r'^[,.:;!\s]+', '', text).strip()
+    if text:
+        text = text[0].upper() + text[1:]
+    return text.strip()
 
 
 def generate_sniper_comment(
@@ -72,18 +131,6 @@ def generate_sniper_comment(
     Synthesizes a short, punchy, human sniper comment using Gemini and Few-Shot style memory.
     """
     gemini = gemini_client or GeminiClient()
-
-    # Determine human recipient: always prioritize the target_name to prevent repost hallucination (e.g. ACC, Cia)
-    human_recipient = (target_name or author_name or "").strip()
-    author_first_name = human_recipient.split()[0] if human_recipient else ""
-
-    repost_note = ""
-    if target_name and author_name and target_name.strip().lower() != author_name.strip().lower():
-        repost_note = (
-            f"\nATENÇÃO AO DESTINATÁRIO: O autor que estamos engajando no LinkedIn é {human_recipient} (Primeiro nome: {author_first_name}). "
-            f"Ele compartilhou um post originalmente de '{author_name}'. "
-            f"Dirija-se EXCLUSIVAMENTE a {author_first_name}. JAMAIS se dirija a '{author_name}' e NUNCA use siglas ou empresas como destinatário.\n"
-        )
 
     few_shot_section = ""
     try:
@@ -107,15 +154,18 @@ def generate_sniper_comment(
         logger.debug("Could not fetch Cognee style context: %s", e)
 
     prompt = (
-        f"Analise a publicação recente no LinkedIn do autor '{human_recipient}' (Primeiro nome: {author_first_name}, Nicho: {nicho}):\n\n"
+        f"Analise a publicação recente no LinkedIn (Nicho: {nicho}):\n\n"
         f"--- CONTEÚDO DO POST ---\n"
         f"{post_text[:2500]}\n"
         f"-------------------------\n"
-        f"{repost_note}"
         f"{few_shot_section}\n"
         f"{cognee_section}\n"
-        f"Redija um comentário autêntico, pessoal (em 1ª pessoa), conciso (1 a 3 frases, máximo 45 palavras) e de alto valor. "
-        f"Conecte diretamente com {author_first_name or 'o autor'} e termine com uma pergunta específica e envolvente."
+        f"Redija um comentário autêntico de Fernando Nogueira, em 1ª pessoa, conciso (1 a 3 frases, máximo 40 palavras) e de alto valor prático.\n"
+        f"REGRAS OBRIGATÓRIAS:\n"
+        f"1. Vá DIRETO ao insight sem introduções clichês ('ponto cirúrgico', 'excelente iniciativa', etc.).\n"
+        f"2. NÃO cite o nome de pessoas nem de empresas.\n"
+        f"3. NUNCA use a palavra 'bancada'.\n"
+        f"4. NUNCA termine com perguntas. Finalize com uma constatação assertiva e contundente."
     )
 
     result: SniperCommentResult = gemini.generate_structured(
@@ -124,6 +174,7 @@ def generate_sniper_comment(
         response_model=SniperCommentResult,
         model_name="gemini-2.5-flash",
     )
+    result.comentario = sanitize_sniper_comment(result.comentario)
     return result
 
 
@@ -139,7 +190,6 @@ def refine_sniper_comment(
     Refines an existing sniper comment based on Fernando's specific feedback or instruction.
     """
     gemini = gemini_client or GeminiClient()
-    author_first_name = author_name.split()[0] if author_name else "autor"
 
     cognee_section = ""
     try:
@@ -149,14 +199,19 @@ def refine_sniper_comment(
         logger.debug("Could not fetch Cognee style context: %s", e)
 
     prompt = (
-        f"Contexto do post original de {author_name or 'LinkedIn'} ({nicho}):\n"
+        f"Contexto do post original ({nicho}):\n"
         f"{post_text[:1500]}\n\n"
         f"Comentário sugerido anteriormente:\n\"{current_comment}\"\n\n"
         f"INSTRUÇÃO DE AJUSTE DADA POR FERNANDO NOGUEIRA:\n"
         f"\"{instruction}\"\n\n"
         f"{cognee_section}\n"
         f"Reescreva o comentário atendendo rigorosamente à instrução acima, "
-        f"mantendo a voz pessoal, concisa (1 a 3 frases, máximo 50 palavras) e autêntica de Fernando Nogueira."
+        f"mantendo a voz pessoal, concisa (1 a 3 frases, máximo 40 palavras) de Fernando Nogueira.\n"
+        f"REGRAS OBRIGATÓRIAS:\n"
+        f"- NUNCA use clichês como 'ponto cirúrgico', 'excelente iniciativa', etc.\n"
+        f"- NÃO cite o nome de pessoas nem de empresas.\n"
+        f"- NUNCA use a palavra 'bancada'.\n"
+        f"- NUNCA termine com perguntas."
     )
 
     result: SniperCommentResult = gemini.generate_structured(
@@ -165,6 +220,7 @@ def refine_sniper_comment(
         response_model=SniperCommentResult,
         model_name="gemini-2.5-flash",
     )
+    result.comentario = sanitize_sniper_comment(result.comentario)
     return result
 
 
@@ -351,49 +407,74 @@ def task_publish_approved_linkedin_comment(self, comment_id: int) -> Dict[str, A
     comentario = comment["comentario_gerado"]
     target_nome = comment["target_nome"]
 
-    # Execute publication with humanized typing
-    pub_res = linkedin_publisher.comment_on_post(
-        post_url=post_url,
-        comment_text=comentario,
-    )
-
-    # Also register organic like reaction on the post
     try:
-        linkedin_publisher.like_post(post_url=post_url)
-        logger.info("Automatically liked post %s alongside comment #%d.", post_url, comment_id)
-    except Exception as err_like:
-        logger.warning("Could not like post %s alongside comment #%d: %s", post_url, comment_id, err_like)
+        # Execute publication with humanized typing
+        pub_res = linkedin_publisher.comment_on_post(
+            post_url=post_url,
+            comment_text=comentario,
+        )
 
-    # Mark as published in repository
-    repo.update_linkedin_growth_comment_status(comment_id=comment_id, status="PUBLISHED")
-
-    # Record into style memory for continuous few-shot learning
-    try:
-        repo.record_style_memory(comment_id=comment_id, final_comment=comentario)
-    except Exception as e:
-        logger.warning("Could not record style memory for comment #%d: %s", comment_id, e)
-
-    whatsapp_recipient = getattr(settings, "EDITORIAL_WHATSAPP_RECIPIENT", None) or getattr(settings, "NOTIFICATION_PHONE", None)
-    if whatsapp_recipient:
+        # Also register organic like reaction on the post
         try:
-            ev = EvolutionClient()
-            confirm_msg = (
-                f"✅ *COMENTÁRIO PUBLICADO NO LINKEDIN COM SUCESSO!*\n\n"
-                f"👤 *Autor:* {target_nome}\n"
-                f"🔗 *Post:* {post_url}\n\n"
-                f"💬 *Seu comentário:*\n\"{comentario}\""
-            )
-            ev.send_message(whatsapp_recipient, confirm_msg)
-        except Exception as e:
-            logger.warning("Could not send WhatsApp publication confirmation: %s", e)
+            linkedin_publisher.like_post(post_url=post_url)
+            logger.info("Automatically liked post %s alongside comment #%d.", post_url, comment_id)
+        except Exception as err_like:
+            logger.warning("Could not like post %s alongside comment #%d: %s", post_url, comment_id, err_like)
 
-    return {
-        "status": "PUBLISHED",
-        "comment_id": comment_id,
-        "target": target_nome,
-        "post_url": post_url,
-        "details": pub_res,
-    }
+        # Mark as published in repository
+        repo.update_linkedin_growth_comment_status(comment_id=comment_id, status="PUBLISHED")
+
+        # Record into style memory for continuous few-shot learning
+        try:
+            repo.record_style_memory(comment_id=comment_id, final_comment=comentario)
+        except Exception as e:
+            logger.warning("Could not record style memory for comment #%d: %s", comment_id, e)
+
+        whatsapp_recipient = getattr(settings, "EDITORIAL_WHATSAPP_RECIPIENT", None) or getattr(settings, "NOTIFICATION_PHONE", None)
+        if whatsapp_recipient:
+            try:
+                ev = EvolutionClient()
+                confirm_msg = (
+                    f"✅ *COMENTÁRIO PUBLICADO NO LINKEDIN COM SUCESSO!*\n\n"
+                    f"👤 *Autor:* {target_nome}\n"
+                    f"🔗 *Post:* {post_url}\n\n"
+                    f"💬 *Seu comentário:*\n\"{comentario}\""
+                )
+                ev.send_message(whatsapp_recipient, confirm_msg)
+            except Exception as e:
+                logger.warning("Could not send WhatsApp publication confirmation: %s", e)
+
+        return {
+            "status": "PUBLISHED",
+            "comment_id": comment_id,
+            "target": target_nome,
+            "post_url": post_url,
+            "details": pub_res,
+        }
+    except Exception as exc:
+        logger.error("Failed to publish approved comment #%d: %s", comment_id, exc, exc_info=True)
+        if self.request.retries < self.max_retries:
+            logger.info("Retrying comment #%d publication (attempt %d/%d)...", comment_id, self.request.retries + 1, self.max_retries)
+            raise self.retry(exc=exc)
+
+        # If all retries exhausted, mark comment status as FAILED_PUBLISH
+        repo.update_linkedin_growth_comment_status(comment_id=comment_id, status="FAILED_PUBLISH")
+
+        whatsapp_recipient = getattr(settings, "EDITORIAL_WHATSAPP_RECIPIENT", None) or getattr(settings, "NOTIFICATION_PHONE", None)
+        if whatsapp_recipient:
+            try:
+                ev = EvolutionClient()
+                err_msg = (
+                    f"⚠️ *FALHA AO PUBLICAR COMENTÁRIO NO LINKEDIN*\n\n"
+                    f"👤 *Autor:* {target_nome}\n"
+                    f"🔗 *Post:* {post_url}\n\n"
+                    f"❌ *Erro:* {str(exc)[:200]}\n\n"
+                    f"⚙️ Você pode tentar novamente no painel: https://fernandonogueira.dev.br/admin/linkedin"
+                )
+                ev.send_message(whatsapp_recipient, err_msg)
+            except Exception:
+                pass
+        raise exc
 
 
 @celery_app.task(

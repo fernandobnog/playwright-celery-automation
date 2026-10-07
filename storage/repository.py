@@ -998,14 +998,21 @@ class PipelineRepository:
         """
         Retrieves recent authentic comment examples (prioritizing human-edited ones)
         to inject as few-shot in-context learning.
+        Strictly excludes any examples with questions, 'bancada', or clichéd openers.
+        """
+        filter_sql = """
+            AND comentario_final NOT LIKE '%?%'
+            AND LOWER(comentario_final) NOT LIKE '%bancada%'
+            AND LOWER(comentario_final) NOT LIKE 'ponto cirúrgico%'
+            AND LOWER(comentario_final) NOT LIKE 'excelente%'
         """
         with self._get_connection() as conn:
             if nicho:
                 cursor = conn.execute(
-                    """
+                    f"""
                     SELECT post_texto, post_autor, comentario_final, foi_editado
                     FROM linkedin_style_memory
-                    WHERE nicho = ?
+                    WHERE nicho = ? {filter_sql}
                     ORDER BY foi_editado DESC, id DESC
                     LIMIT ?
                     """,
@@ -1017,9 +1024,10 @@ class PipelineRepository:
 
             # Fallback / General
             cursor = conn.execute(
-                """
+                f"""
                 SELECT post_texto, post_autor, comentario_final, foi_editado
                 FROM linkedin_style_memory
+                WHERE 1=1 {filter_sql}
                 ORDER BY foi_editado DESC, id DESC
                 LIMIT ?
                 """,
@@ -1040,7 +1048,8 @@ class PipelineRepository:
                     SUM(CASE WHEN status = 'PENDING_APPROVAL' THEN 1 ELSE 0 END) as pending,
                     SUM(CASE WHEN status = 'APPROVED' THEN 1 ELSE 0 END) as approved,
                     SUM(CASE WHEN status = 'PUBLISHED' THEN 1 ELSE 0 END) as published,
-                    SUM(CASE WHEN status = 'LIKED' THEN 1 ELSE 0 END) as liked
+                    SUM(CASE WHEN status = 'LIKED' THEN 1 ELSE 0 END) as liked,
+                    SUM(CASE WHEN status = 'FAILED_PUBLISH' THEN 1 ELSE 0 END) as failed
                 FROM linkedin_growth_comments
                 """
             ).fetchone()
@@ -1052,6 +1061,7 @@ class PipelineRepository:
                 "approved_comments": (row_comments["approved"] if row_comments else 0) or 0,
                 "published_comments": (row_comments["published"] if row_comments else 0) or 0,
                 "liked_comments": (row_comments["liked"] if row_comments else 0) or 0,
+                "failed_comments": (row_comments["failed"] if row_comments else 0) or 0,
             }
 
     # ─── LinkedIn Connection Autopilot ──────────────────────────────────────────
