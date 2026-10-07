@@ -191,6 +191,21 @@ def refine_sniper_comment(
     """
     gemini = gemini_client or GeminiClient()
 
+    few_shot_section = ""
+    try:
+        from storage.repository import repo
+        examples = repo.get_style_examples(limit=2, nicho=nicho)
+        if examples:
+            shots = []
+            for ex in examples:
+                shots.append(
+                    f"- Post: \"{ex['post_texto'][:140]}...\"\n"
+                    f"  Comentário real de Fernando: \"{ex['comentario_final']}\""
+                )
+            few_shot_section = "\n\n--- EXEMPLOS REAIS DO ESTILO DE ESCRITA DE FERNANDO NOGUEIRA ---\n" + "\n".join(shots) + "\n---------------------------------------------------------------\n"
+    except Exception as e:
+        logger.debug("Could not fetch style examples for refinement: %s", e)
+
     cognee_section = ""
     try:
         from integrations.cognee_service import cognee_service
@@ -204,6 +219,7 @@ def refine_sniper_comment(
         f"Comentário sugerido anteriormente:\n\"{current_comment}\"\n\n"
         f"INSTRUÇÃO DE AJUSTE DADA POR FERNANDO NOGUEIRA:\n"
         f"\"{instruction}\"\n\n"
+        f"{few_shot_section}\n"
         f"{cognee_section}\n"
         f"Reescreva o comentário atendendo rigorosamente à instrução acima, "
         f"mantendo a voz pessoal, concisa (1 a 3 frases, máximo 40 palavras) de Fernando Nogueira.\n"

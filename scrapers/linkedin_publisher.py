@@ -11,7 +11,7 @@ from pathlib import Path
 import random
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import urllib.request
 import markdown
 from playwright.sync_api import BrowserContext, Page, sync_playwright
@@ -345,6 +345,68 @@ class LinkedInPublisher:
             "and login once to save session state."
         )
 
+    def _create_resilient_context(
+        self,
+        p,
+        state_file: Optional[str] = None,
+        viewport: Optional[Dict[str, int]] = None,
+        permissions: Optional[List[str]] = None,
+    ) -> Tuple[Optional[Any], Any, Any]:
+        """
+        Creates a Chromium browser and context with resilient concurrency fallback.
+        Attempts launch_persistent_context first if configured. If the persistent
+        profile is locked or in use by another concurrent task/worker, gracefully
+        falls back to an isolated browser instance using the synchronized storage_state.
+        """
+        launch_args = [
+            "--disable-blink-features=AutomationControlled",
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
+        ]
+        vp = viewport or {"width": 1280, "height": 850}
+        browser = None
+
+        if settings.PLAYWRIGHT_USER_DATA_DIR and Path(settings.PLAYWRIGHT_USER_DATA_DIR).exists():
+            try:
+                persistent_kwargs: Dict[str, Any] = {
+                    "user_data_dir": settings.PLAYWRIGHT_USER_DATA_DIR,
+                    "headless": self.headless,
+                    "args": launch_args,
+                    "viewport": vp,
+                    "user_agent": PERSISTENT_USER_AGENT,
+                    "locale": "pt-BR",
+                    "timezone_id": "America/Sao_Paulo",
+                }
+                if permissions:
+                    persistent_kwargs["permissions"] = permissions
+                context = p.chromium.launch_persistent_context(**persistent_kwargs)
+                page = context.pages[0] if context.pages else context.new_page()
+                context.add_init_script(STEALTH_EVASION_SCRIPT)
+                return browser, context, page
+            except Exception as exc:
+                logger.warning(
+                    "Persistent browser profile in use or locked (%s). Falling back to isolated browser context.",
+                    exc,
+                )
+
+        # Isolated fallback using synchronized storage_state
+        browser = p.chromium.launch(headless=self.headless, args=launch_args)
+        context_kwargs: Dict[str, Any] = {
+            "viewport": vp,
+            "user_agent": PERSISTENT_USER_AGENT,
+            "locale": "pt-BR",
+            "timezone_id": "America/Sao_Paulo",
+        }
+        if state_file:
+            context_kwargs["storage_state"] = state_file
+        if permissions:
+            context_kwargs["permissions"] = permissions
+        context = browser.new_context(**context_kwargs)
+        page = context.new_page()
+        context.add_init_script(STEALTH_EVASION_SCRIPT)
+        return browser, context, page
+
     def publish_feed_post(
         self,
         text: str,
@@ -358,42 +420,7 @@ class LinkedInPublisher:
 
         with sync_playwright() as p:
             viewport = get_random_viewport()
-            user_agent = get_random_user_agent()
-
-            launch_args = [
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-            ]
-            std_ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
-
-            browser = None
-            if settings.PLAYWRIGHT_USER_DATA_DIR and Path(settings.PLAYWRIGHT_USER_DATA_DIR).exists():
-                context = p.chromium.launch_persistent_context(
-                    user_data_dir=settings.PLAYWRIGHT_USER_DATA_DIR,
-                    headless=self.headless,
-                    args=launch_args,
-                    viewport={"width": 1280, "height": 850},
-                    user_agent=PERSISTENT_USER_AGENT,
-                    locale="pt-BR",
-                    timezone_id="America/Sao_Paulo",
-                )
-                page = context.pages[0] if context.pages else context.new_page()
-            else:
-                browser = p.chromium.launch(headless=self.headless, args=launch_args)
-                context_kwargs = {
-                    "viewport": {"width": 1280, "height": 850},
-                    "user_agent": PERSISTENT_USER_AGENT,
-                    "locale": "pt-BR",
-                    "timezone_id": "America/Sao_Paulo",
-                }
-                if state_file:
-                    context_kwargs["storage_state"] = state_file
-                context = browser.new_context(**context_kwargs)
-                page = context.new_page()
-
-            context.add_init_script(STEALTH_EVASION_SCRIPT)
+            browser, context, page = self._create_resilient_context(p, state_file=state_file, viewport=viewport)
 
             try:
                 self.ensure_authenticated(page, context)
@@ -570,35 +597,7 @@ class LinkedInPublisher:
         with sync_playwright() as p:
             viewport = get_random_viewport()
 
-            browser = None
-            if settings.PLAYWRIGHT_USER_DATA_DIR and Path(settings.PLAYWRIGHT_USER_DATA_DIR).exists():
-                logger.info("Using persistent browser profile for Pulse from: %s", settings.PLAYWRIGHT_USER_DATA_DIR)
-                context = p.chromium.launch_persistent_context(
-                    user_data_dir=settings.PLAYWRIGHT_USER_DATA_DIR,
-                    headless=self.headless,
-                    args=["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-dev-shm-usage"],
-                    viewport=viewport,
-                    user_agent=PERSISTENT_USER_AGENT,
-                    locale="pt-BR",
-                    timezone_id="America/Sao_Paulo",
-                )
-            else:
-                browser = p.chromium.launch(
-                    headless=self.headless,
-                    args=["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-dev-shm-usage"],
-                )
-                context_kwargs = {
-                    "viewport": viewport,
-                    "user_agent": PERSISTENT_USER_AGENT,
-                    "locale": "pt-BR",
-                    "timezone_id": "America/Sao_Paulo",
-                }
-                if state_file:
-                    context_kwargs["storage_state"] = state_file
-                context = browser.new_context(**context_kwargs)
-
-            context.add_init_script(STEALTH_EVASION_SCRIPT)
-            page = context.new_page()
+            browser, context, page = self._create_resilient_context(p, state_file=state_file, viewport=viewport)
 
             try:
                 self.ensure_authenticated(page, context)
@@ -872,40 +871,11 @@ class LinkedInPublisher:
         state_file = self.sync_session_from_redis_or_disk()
 
         with sync_playwright() as p:
-            launch_args = [
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-            ]
-            browser = None
-            if settings.PLAYWRIGHT_USER_DATA_DIR and Path(settings.PLAYWRIGHT_USER_DATA_DIR).exists():
-                context = p.chromium.launch_persistent_context(
-                    user_data_dir=settings.PLAYWRIGHT_USER_DATA_DIR,
-                    headless=self.headless,
-                    args=launch_args,
-                    viewport={"width": 1280, "height": 850},
-                    user_agent=PERSISTENT_USER_AGENT,
-                    locale="pt-BR",
-                    timezone_id="America/Sao_Paulo",
-                    permissions=["clipboard-read", "clipboard-write"],
-                )
-                page = context.pages[0] if context.pages else context.new_page()
-            else:
-                browser = p.chromium.launch(headless=self.headless, args=launch_args)
-                context_kwargs = {
-                    "viewport": {"width": 1280, "height": 850},
-                    "user_agent": PERSISTENT_USER_AGENT,
-                    "locale": "pt-BR",
-                    "timezone_id": "America/Sao_Paulo",
-                    "permissions": ["clipboard-read", "clipboard-write"],
-                }
-                if state_file:
-                    context_kwargs["storage_state"] = state_file
-                context = browser.new_context(**context_kwargs)
-                page = context.new_page()
-
-            context.add_init_script(STEALTH_EVASION_SCRIPT)
+            browser, context, page = self._create_resilient_context(
+                p,
+                state_file=state_file,
+                permissions=["clipboard-read", "clipboard-write"],
+            )
 
             try:
                 self.ensure_authenticated(page, context)
@@ -1070,38 +1040,7 @@ class LinkedInPublisher:
         state_file = self.sync_session_from_redis_or_disk()
 
         with sync_playwright() as p:
-            launch_args = [
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-            ]
-            browser = None
-            if settings.PLAYWRIGHT_USER_DATA_DIR and Path(settings.PLAYWRIGHT_USER_DATA_DIR).exists():
-                context = p.chromium.launch_persistent_context(
-                    user_data_dir=settings.PLAYWRIGHT_USER_DATA_DIR,
-                    headless=self.headless,
-                    args=launch_args,
-                    viewport={"width": 1280, "height": 850},
-                    user_agent=PERSISTENT_USER_AGENT,
-                    locale="pt-BR",
-                    timezone_id="America/Sao_Paulo",
-                )
-                page = context.pages[0] if context.pages else context.new_page()
-            else:
-                browser = p.chromium.launch(headless=self.headless, args=launch_args)
-                context_kwargs = {
-                    "viewport": {"width": 1280, "height": 850},
-                    "user_agent": PERSISTENT_USER_AGENT,
-                    "locale": "pt-BR",
-                    "timezone_id": "America/Sao_Paulo",
-                }
-                if state_file:
-                    context_kwargs["storage_state"] = state_file
-                context = browser.new_context(**context_kwargs)
-                page = context.new_page()
-
-            context.add_init_script(STEALTH_EVASION_SCRIPT)
+            browser, context, page = self._create_resilient_context(p, state_file=state_file)
 
             try:
                 self.ensure_authenticated(page, context)
@@ -1171,7 +1110,10 @@ class LinkedInPublisher:
                     raise RuntimeError(f"Comment editor box not found on {post_url}. Screenshot saved: {shot_err}")
 
                 logger.info("Typing sniper comment into editor...")
-                editor.scroll_into_view_if_needed(timeout=5000)
+                try:
+                    editor.scroll_into_view_if_needed(timeout=4000)
+                except Exception as err_scroll:
+                    logger.debug("Editor scroll_into_view_if_needed bypassed: %s", err_scroll)
                 human_click(page, editor)
                 human_sleep(0.5, 1.2)
                 human_type(page, editor, comment_text, min_delay_ms=25, max_delay_ms=65)
@@ -1219,7 +1161,10 @@ class LinkedInPublisher:
                     raise RuntimeError("Submit comment button not found or disabled.")
 
                 logger.info("Clicking submit comment button...")
-                submit_btn.scroll_into_view_if_needed(timeout=5000)
+                try:
+                    submit_btn.scroll_into_view_if_needed(timeout=4000)
+                except Exception as err_scroll:
+                    logger.debug("Submit button scroll_into_view_if_needed bypassed: %s", err_scroll)
                 human_click(page, submit_btn)
                 human_sleep(3.5, 5.5)
 
@@ -1248,38 +1193,7 @@ class LinkedInPublisher:
         state_file = self.sync_session_from_redis_or_disk()
 
         with sync_playwright() as p:
-            launch_args = [
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-            ]
-            browser = None
-            if settings.PLAYWRIGHT_USER_DATA_DIR and Path(settings.PLAYWRIGHT_USER_DATA_DIR).exists():
-                context = p.chromium.launch_persistent_context(
-                    user_data_dir=settings.PLAYWRIGHT_USER_DATA_DIR,
-                    headless=self.headless,
-                    args=launch_args,
-                    viewport={"width": 1280, "height": 850},
-                    user_agent=PERSISTENT_USER_AGENT,
-                    locale="pt-BR",
-                    timezone_id="America/Sao_Paulo",
-                )
-                page = context.pages[0] if context.pages else context.new_page()
-            else:
-                browser = p.chromium.launch(headless=self.headless, args=launch_args)
-                context_kwargs = {
-                    "viewport": {"width": 1280, "height": 850},
-                    "user_agent": PERSISTENT_USER_AGENT,
-                    "locale": "pt-BR",
-                    "timezone_id": "America/Sao_Paulo",
-                }
-                if state_file:
-                    context_kwargs["storage_state"] = state_file
-                context = browser.new_context(**context_kwargs)
-                page = context.new_page()
-
-            context.add_init_script(STEALTH_EVASION_SCRIPT)
+            browser, context, page = self._create_resilient_context(p, state_file=state_file)
 
             try:
                 self.ensure_authenticated(page, context)
@@ -1417,32 +1331,7 @@ class LinkedInPublisher:
         state_file = self.sync_session_from_redis_or_disk()
 
         with sync_playwright() as p:
-            browser = None
-            if settings.PLAYWRIGHT_USER_DATA_DIR and Path(settings.PLAYWRIGHT_USER_DATA_DIR).exists():
-                context = p.chromium.launch_persistent_context(
-                    user_data_dir=settings.PLAYWRIGHT_USER_DATA_DIR,
-                    headless=self.headless,
-                    args=["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-dev-shm-usage"],
-                    viewport={"width": 1280, "height": 850},
-                    user_agent=PERSISTENT_USER_AGENT,
-                    locale="pt-BR",
-                    timezone_id="America/Sao_Paulo",
-                )
-                page = context.pages[0] if context.pages else context.new_page()
-            else:
-                browser = p.chromium.launch(headless=self.headless, args=["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-dev-shm-usage"])
-                context_kwargs = {
-                    "viewport": {"width": 1280, "height": 850},
-                    "user_agent": PERSISTENT_USER_AGENT,
-                    "locale": "pt-BR",
-                    "timezone_id": "America/Sao_Paulo",
-                }
-                if state_file:
-                    context_kwargs["storage_state"] = state_file
-                context = browser.new_context(**context_kwargs)
-                page = context.new_page()
-
-            context.add_init_script(STEALTH_EVASION_SCRIPT)
+            browser, context, page = self._create_resilient_context(p, state_file=state_file)
 
             try:
                 self.ensure_authenticated(page, context)
@@ -1516,32 +1405,7 @@ class LinkedInPublisher:
         state_file = self.sync_session_from_redis_or_disk()
 
         with sync_playwright() as p:
-            browser = None
-            if settings.PLAYWRIGHT_USER_DATA_DIR and Path(settings.PLAYWRIGHT_USER_DATA_DIR).exists():
-                context = p.chromium.launch_persistent_context(
-                    user_data_dir=settings.PLAYWRIGHT_USER_DATA_DIR,
-                    headless=self.headless,
-                    args=["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-dev-shm-usage"],
-                    viewport={"width": 1280, "height": 850},
-                    user_agent=PERSISTENT_USER_AGENT,
-                    locale="pt-BR",
-                    timezone_id="America/Sao_Paulo",
-                )
-                page = context.pages[0] if context.pages else context.new_page()
-            else:
-                browser = p.chromium.launch(headless=self.headless, args=["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-dev-shm-usage"])
-                context_kwargs = {
-                    "viewport": {"width": 1280, "height": 850},
-                    "user_agent": PERSISTENT_USER_AGENT,
-                    "locale": "pt-BR",
-                    "timezone_id": "America/Sao_Paulo",
-                }
-                if state_file:
-                    context_kwargs["storage_state"] = state_file
-                context = browser.new_context(**context_kwargs)
-                page = context.new_page()
-
-            context.add_init_script(STEALTH_EVASION_SCRIPT)
+            browser, context, page = self._create_resilient_context(p, state_file=state_file)
 
             try:
                 self.ensure_authenticated(page, context)

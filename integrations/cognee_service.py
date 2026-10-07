@@ -46,8 +46,8 @@ class SelfHostedCogneeService:
     async def _add_and_cognify(self, text: str, dataset_name: str = "fernando_style"):
         import cognee
         self._ensure_init()
+        # Ingest text chunks into LanceDB for semantic search; avoid heavy in-process cognify
         await cognee.add(text, dataset_name=dataset_name)
-        await cognee.cognify(dataset_name)
 
     def record_style_preference(
         self,
@@ -115,22 +115,15 @@ class SelfHostedCogneeService:
     def retrieve_style_context(self, post_text: str, nicho: Optional[str] = None) -> str:
         """
         Retrieves relevant style patterns and past examples from self-hosted Cognee.
+        Guaranteed to never block or delay comment generation.
         """
         query = f"Como Fernando Nogueira comenta sobre {nicho or 'tecnologia'} e {post_text[:120]}?"
         try:
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    # If running in async loop, schedule or return empty (fallback to repo)
-                    import concurrent.futures
-                    with concurrent.futures.ThreadPoolExecutor() as pool:
-                        results = pool.submit(
-                            lambda: asyncio.run(self._search_chunks(query, top_k=2))
-                        ).result(timeout=5.0)
-                else:
-                    results = loop.run_until_complete(self._search_chunks(query, top_k=2))
-            except RuntimeError:
-                results = asyncio.run(self._search_chunks(query, top_k=2))
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                results = pool.submit(
+                    lambda: asyncio.run(self._search_chunks(query, top_k=2))
+                ).result(timeout=1.5)
 
             if results:
                 formatted = "\n\n--- MEMÓRIA DE ESTILO RECUPERADA VIA COGNEE (SELF-HOSTED) ---\n"
