@@ -12,6 +12,8 @@ from datetime import datetime
 import html
 import logging
 from pathlib import Path
+import re
+import shutil
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
@@ -83,6 +85,128 @@ def strip_editorial_preamble(md_text: str) -> str:
     return "\n".join(lines).strip()
 
 
+BANNED_LINKEDIN_FEED_CLICHES = [
+    "a maioria das empresas não está implementando ia para inovar. está usando para terceirizar",
+    "em um mundo cada vez mais",
+    "no cenário atual",
+    "prepare-se para o choque",
+    "é imperativo que",
+    "mergulhe fundo",
+    "ponto cirúrgico",
+    "qual foi o maior débito técnico ou 'alucinação' que você já pegou",
+]
+
+
+def sanitize_linkedin_feed_text(text: str) -> str:
+    """
+    Cleans raw markdown formatting, asterisks, broken link syntax, and structural markers
+    so the post renders beautifully and cleanly in LinkedIn's plain-text feed.
+    """
+    if not text:
+        return ""
+    lines = []
+    for line in text.splitlines():
+        trimmed = line.strip()
+        if re.match(r'^[=\-_\*]{3,}$', trimmed):
+            continue
+        if trimmed.startswith("CANAL ") or trimmed.startswith("----------------"):
+            continue
+        # Drop leading markdown heading markers (requiring whitespace so hashtags like #Tech are preserved)
+        line_clean = re.sub(r'^#{1,6}\s+', '', line)
+        lines.append(line_clean)
+
+    clean_text = "\n".join(lines).strip()
+    # Replace markdown bold **Word:** or **Word** with clean text
+    clean_text = re.sub(r'\*\*([^*]+)\*\*', r'\1', clean_text)
+    clean_text = re.sub(r'(?<!\w)\*([^*]+)\*(?!\w)', r'\1', clean_text)
+    # Replace markdown links [Anchor Text](http...) with Anchor Text
+    clean_text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', clean_text)
+    # Normalize excessive consecutive newlines to maximum 2
+    clean_text = re.sub(r'\n{3,}', '\n\n', clean_text)
+    return clean_text.strip()
+
+
+def enhance_article_linkedin_feed_post(
+    feed_post_raw: str,
+    article_title: str,
+    article_summary: str,
+    categoria: str,
+    blog_url: Optional[str] = None,
+    gemini_client: Optional[GeminiClient] = None,
+) -> str:
+    """
+    Ensures the companion feed post for a published article is high-performing,
+    executive-level, and completely free of repeated LLM clichés.
+    If the draft post contains prohibited template phrases, mismatched metaphors,
+    or lacks substance, uses Gemini to craft a tailored executive post.
+    """
+    sanitized = sanitize_linkedin_feed_text(feed_post_raw)
+    lower_text = sanitized.lower()
+
+    # Check for cliché contamination or lack of depth
+    has_cliche = any(cliche in lower_text for cliche in BANNED_LINKEDIN_FEED_CLICHES)
+    mismatched_metaphor = (
+        "advogado maestro" in lower_text
+        and "direito" not in categoria.lower()
+        and "advocacia" not in categoria.lower()
+        and "jurid" not in categoria.lower()
+    )
+    needs_rewrite = has_cliche or mismatched_metaphor or len(sanitized) < 250
+
+    if not needs_rewrite:
+        final_text = sanitized
+        if blog_url and blog_url not in final_text:
+            hashtag_match = re.search(r'((?:#\w+\s*)+)$', final_text)
+            if hashtag_match:
+                before_hash = final_text[:hashtag_match.start()].strip()
+                hashes = hashtag_match.group(1).strip()
+                final_text = f"{before_hash}\n\nConfira também o ensaio completo e gráficos no blog corporativo:\n{blog_url}\n\n{hashes}"
+            else:
+                final_text = f"{final_text}\n\nConfira também o ensaio completo e gráficos no blog corporativo:\n{blog_url}"
+        return final_text
+
+    logger.info("Feed post contains cliches or lacks depth. Rewriting via Gemini with Fernando's CTO persona...")
+    gemini = gemini_client or GeminiClient()
+
+    refine_prompt = (
+        f"Artigo Publicado: \"{article_title}\"\n"
+        f"Categoria: {categoria}\n"
+        f"Resumo / Trecho do Artigo:\n{article_summary[:2500]}\n"
+        f"Post Bruto Extraído:\n{feed_post_raw}\n\n"
+        f"Redija um POST DE FEED DE ALTA PERFORMANCE para o LinkedIn com a persona de Fernando Bonaite Nogueira "
+        f"(CTO @ NTAPP & Nogueira e Tognin, arquiteto de software, 19 anos de experiência em IA e modernização corporativa).\n"
+        f"Diretrizes inegociáveis:\n"
+        f"1. Hook magnético nas primeiras 1-2 linhas baseado no contraste real, tensão técnica ou dado surpreendente desta matéria. Linha em branco após a linha 2 para forçar o clique em '...ver mais'.\n"
+        f"2. 2 parágrafos curtos explicando o fato investigado (a realidade da trincheira).\n"
+        f"3. 3 lições práticas de liderança/engenharia com marcadores limpos ('•' ou '—') e palavras-chave em CAIXA ALTA (NUNCA usar asteriscos '**').\n"
+        f"4. Ponte executiva explicando que a análise técnica integral, arquitetura e dados foram aprofundados no artigo completo no LinkedIn Pulse (cartão anexo logo abaixo) e no blog ({blog_url or 'fernandonogueira.dev.br'}).\n"
+        f"5. Pergunta de debate específica e instigante para outros CTOs, diretores e gestores da área comentarem.\n"
+        f"6. Convite discreto para conectar no LinkedIn.\n"
+        f"7. 2 a 3 hashtags de nicho no rodapé.\n"
+        f"8. ESTRITAMENTE PROIBIDO: Usar 'A maioria das empresas não está...', 'Advogado Maestro' fora do jurídico, emojis '👇', ou 'No mundo de hoje'."
+    )
+
+    try:
+        response = gemini.generate_content(
+            prompt=refine_prompt,
+            system_instruction=(
+                "Você é o ghostwriter executivo de Fernando Bonaite Nogueira (CTO @ NTAPP & Nogueira e Tognin). "
+                "Escreva posts para o feed do LinkedIn com tom de líder técnico experiente, pragmático, "
+                "que valoriza engenharia real, ROI e governança, sem hype vazio de marketing. "
+                "Nunca use asteriscos markdown no texto do post."
+            ),
+            model_name="gemini-2.5-flash",
+        )
+        rewritten = sanitize_linkedin_feed_text(response.strip())
+        if len(rewritten) >= 280:
+            logger.info("Successfully rewritten LinkedIn feed post for article: %s (%d chars)", article_title, len(rewritten))
+            return rewritten
+    except Exception as e_rewrite:
+        logger.warning("Could not rewrite feed post via Gemini (%s). Using sanitized original.", e_rewrite)
+
+    return sanitized
+
+
 def parse_reviewed_doc_content(
     raw_doc_text: str,
     default_pauta_titulo: str = "Tema Editorial",
@@ -117,17 +241,10 @@ def parse_reviewed_doc_content(
         else:
             feed_post = c1_text
 
-        # Clean feed_post of trailing divider lines and section headers
+        # Clean and sanitize feed_post
         if feed_post:
-            clean_feed_lines = []
-            for line in feed_post.splitlines():
-                trimmed = line.strip()
-                if re.match(r'^[=\-_\*]{3,}$', trimmed):
-                    continue
-                if trimmed.startswith("CANAL "):
-                    continue
-                clean_feed_lines.append(line)
-            feed_post = "\n".join(clean_feed_lines).strip()
+            feed_post = sanitize_linkedin_feed_text(feed_post)
+
 
         # Clean pulse_body of leading/trailing divider lines and metadata
         if pulse_body:
@@ -360,26 +477,17 @@ def publish_reviewed_editorial(
             except Exception as e_gen:
                 logger.warning("Could not generate on-the-fly cover image: %s", e_gen)
 
-        # 4.1 LinkedIn Feed Post (Disabled by default: publication focused exclusively on Pulse Article)
-        if publish_linkedin_feed and package.linkedin_post_feed:
-            feed_text = package.linkedin_post_feed.strip()
-            if blog_url and blog_url not in feed_text:
-                import re as re_feed
-                hashtag_match = re_feed.search(r'((?:#\w+\s*)+)$', feed_text)
-                if hashtag_match:
-                    before_hash = feed_text[:hashtag_match.start()].strip()
-                    hashes = hashtag_match.group(1).strip()
-                    feed_text = (
-                        f"{before_hash}\n\n"
-                        f"Confira o ensaio completo e as tendências de mercado no blog:\n{blog_url}\n\n"
-                        f"{hashes}"
-                    )
-                else:
-                    feed_text = (
-                        f"{feed_text}\n\n"
-                        f"Confira o ensaio completo e as tendências de mercado no blog:\n{blog_url}"
-                    )
+        # Prepare high-performing, executive-level companion feed post
+        enhanced_feed_post = enhance_article_linkedin_feed_post(
+            feed_post_raw=package.linkedin_post_feed or "",
+            article_title=package.linkedin_artigo_titulo or package.titulo_blog,
+            article_summary=package.corpo_blog_markdown,
+            categoria=package.categoria,
+            blog_url=blog_url,
+        )
 
+        # 4.1 LinkedIn Feed Post (Disabled by default: publication focused on Pulse Article share)
+        if publish_linkedin_feed and enhanced_feed_post:
             feed_image_path = None
             for p_path in [
                 f"/app/data/square-{package.slug_blog}.png",
@@ -392,7 +500,7 @@ def publish_reviewed_editorial(
 
             try:
                 feed_res = linkedin_client.publish_feed_post(
-                    text=feed_text,
+                    text=enhanced_feed_post,
                     image_path=feed_image_path or cover_image_path,
                 )
                 publication_results["linkedin_feed"] = feed_res
@@ -403,13 +511,12 @@ def publish_reviewed_editorial(
         # 4.2 LinkedIn Pulse Article (if present)
         if package.linkedin_artigo_titulo and package.linkedin_artigo_corpo:
             try:
-                feed_hook = (package.linkedin_post_feed or "").strip()
                 pulse_res = linkedin_client.publish_pulse_article(
                     title=package.linkedin_artigo_titulo,
                     content_markdown=package.linkedin_artigo_corpo,
                     image_path=cover_image_path,
                     blog_url=blog_url,
-                    share_hook=feed_hook or None,
+                    share_hook=enhanced_feed_post or None,
                 )
                 publication_results["linkedin_pulse"] = pulse_res
             except Exception as e_pulse:

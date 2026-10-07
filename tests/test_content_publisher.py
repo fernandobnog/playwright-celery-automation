@@ -15,8 +15,10 @@ from api.main import app
 from core.security import create_editorial_publish_token, verify_editorial_publish_token
 from flows.flow_content_publisher import (
     ReviewedContentPackage,
+    enhance_article_linkedin_feed_post,
     parse_reviewed_doc_content,
     publish_reviewed_editorial,
+    sanitize_linkedin_feed_text,
 )
 from integrations.google.docs import DocsService
 from integrations.site_publisher import SitePublisher, slugify
@@ -353,3 +355,47 @@ def test_editorial_publish_endpoint_invalid_token():
     response = client.get("/api/v1/editorial/publish?token=invalid_hmac_token")
     assert response.status_code == 400
     assert "Link Não Reconhecido" in response.text or "Link Expirado ou Inválido" in response.text
+
+
+def test_sanitize_linkedin_feed_text():
+    raw = (
+        "CANAL 1: ARTIGO LINKEDIN\n"
+        "------------------------------------\n"
+        "## O Segredo da Eficiência\n\n"
+        "• **O GARGALO REAL:** Falta de governança em [B3](https://b3.com.br).\n"
+        "• **A LATÊNCIA:** Modelos sem validação.\n\n"
+        "---\n"
+        "#Tecnologia #IA"
+    )
+    cleaned = sanitize_linkedin_feed_text(raw)
+    assert "**" not in cleaned
+    assert "CANAL 1" not in cleaned
+    assert "---" not in cleaned
+    assert "[B3]" not in cleaned
+    assert "B3" in cleaned
+    assert "• O GARGALO REAL: Falta de governança em B3." in cleaned
+
+
+def test_enhance_article_linkedin_feed_post_clean_passthrough():
+    clean_post = (
+        "Quando a B3 colocou 35 LLMs em produção, o gargalo real não foi o modelo, foi a homologação.\n\n"
+        "Enquanto muitos debatem teoria, bancos cortam 40% do tempo de entrega com governança rígida.\n\n"
+        "• O GARGALO REAL: Sem governança, o débito técnico explode em semanas.\n"
+        "• A HOMOLOGAÇÃO: A esteira exige validação contínua e segura.\n"
+        "• A GOVERNANÇA: Modelos sem isolamento viram risco de compliance.\n\n"
+        "Aprofundei essa análise técnica e benchmarks no artigo completo no LinkedIn Pulse e no blog corporativo.\n\n"
+        "No seu time, onde tem estado o maior gargalo com modelos generativos?\n\n"
+        "Conecte-se por aqui para acompanhar discussões de engenharia e liderança técnica na prática.\n\n"
+        "#InteligenciaArtificial #EngenhariaDeSoftware"
+    )
+    res = enhance_article_linkedin_feed_post(
+        feed_post_raw=clean_post,
+        article_title="A B3 Cortou 40% do Tempo de Entrega com IA",
+        article_summary="Resumo do artigo...",
+        categoria="TECNOLOGIA",
+        blog_url="https://fernandonogueira.dev.br/blog/b3-ia",
+    )
+    assert "b3-ia" in res
+    assert "#InteligenciaArtificial" in res
+    assert "**" not in res
+

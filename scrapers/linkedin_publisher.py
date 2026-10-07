@@ -788,14 +788,21 @@ class LinkedInPublisher:
                 share_input = page.locator("div[role='dialog'] div[role='textbox'], div[role='dialog'] div.ProseMirror, div[role='dialog'] div.tiptap, div[role='dialog'] [contenteditable='true'], div[role='dialog'] div.ql-editor").first
                 if share_input.is_visible(timeout=5000):
                     if share_hook and share_hook.strip():
-                        final_hook = share_hook.strip()
+                        clean_hook = share_hook.strip()
+                        clean_hook = re.sub(r'\*\*([^*]+)\*\*', r'\1', clean_hook)
+                        clean_hook = re.sub(r'(?<!\w)\*([^*]+)\*(?!\w)', r'\1', clean_hook)
+                        clean_hook = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', clean_hook)
+                        clean_hook = re.sub(r'^[=\-_\*]{3,}$', '', clean_hook, flags=re.MULTILINE)
+                        clean_hook = re.sub(r'\n{3,}', '\n\n', clean_hook)
+                        final_hook = clean_hook.strip()
                     else:
                         final_hook = (
-                            f"Artigo novo no LinkedIn Pulse: {title.strip()}.\n\n"
-                            f"Compartilho uma reflexão prática e técnica sobre os impactos reais dessa transformação no dia a dia executivo e operacional.\n\n"
-                            f"Confira a análise completa abaixo e deixe sua perspectiva nos comentários: 👇"
+                            f"Novo artigo no ar: {title.strip()}.\n\n"
+                            f"Compartilho uma reflexão prática e técnica sobre os impactos reais dessa transformação "
+                            f"na engenharia, liderança e operações corporativas.\n\n"
+                            f"Confira a análise completa no cartão abaixo e deixe sua perspectiva nos comentários."
                         )
-                    logger.info("Typing share modal hook with human cadence...")
+                    logger.info("Typing share modal hook with human cadence (%d chars)...", len(final_hook))
                     human_type(page, share_input, final_hook, min_delay_ms=35, max_delay_ms=90)
                     human_sleep(2.0, 3.5)
 
