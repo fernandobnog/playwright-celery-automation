@@ -703,7 +703,15 @@ class PipelineRepository:
                     ("Sofia Esteves", "RH", "https://www.linkedin.com/in/estevessofia/", "Presidente do Conselho Cia de Talentos, Top Voice RH e Carreira (>200k)"),
                     ("Ruy Shiozawa", "RH", "https://www.linkedin.com/in/ruyshiozawa/", "Ex-CEO Great Place to Work (GPTW) Brasil, Cultura e Clima (>80k)"),
                     ("Gabriela Augusto", "RH", "https://www.linkedin.com/in/gabriela-augusto-a30466195/", "Fundadora Transcendemos, Top Voice Consultoria Corporativa e Inclusão (>40k)"),
-
+                    # Inovação Jurídica, LegalTech & IA no Direito (Expansão Estratégica)
+                    ("Ronaldo Lemos", "TI_JURIDICO", "https://www.linkedin.com/in/ronaldolemos/", "Advogado, Diretor do ITS Rio, Especialista em IA, Direito Digital e Políticas Públicas (>100k)"),
+                    ("Luciana Stegagno", "TI_JURIDICO", "https://www.linkedin.com/in/lucianastegagno/", "Head de Legal Operations & Inovação Jurídica, Top Voice LegalOps (>25k)"),
+                    ("Juliana Ono", "TI_JURIDICO", "https://www.linkedin.com/in/juliana-ono/", "Diretora de Conteúdo Thomson Reuters, Especialista em LegalTech e Gestão (>20k)"),
+                    ("Felipe Asensi", "TI_JURIDICO", "https://www.linkedin.com/in/felipe-asensi/", "Fundador Global Academy, Inovação, Carreira e Tecnologia no Direito (>50k)"),
+                    # Liderança Tecnológica, Governança & IA Corporativa
+                    ("Paulo Silveira", "LIDERANCA_TI", "https://www.linkedin.com/in/paulosilveira/", "CEO Grupo Alura / Hipsters.tech, Liderança Técnica, IA e Educação Corporativa (>150k)"),
+                    ("Cezar Taurion", "LIDERANCA_TI", "https://www.linkedin.com/in/ctaurion/", "Chief Strategy Officer Redpill Innovation, Autor, Estratégia de IA e Computação em Nuvem (>80k)"),
+                    ("Silvio Meira", "LIDERANCA_TI", "https://www.linkedin.com/in/silviomeira/", "Cientista-chefe TDS.company, Professor Emérito UFPE, Futurismo e Transformação Digital (>150k)"),
                 ]
                 conn.executemany(
                     """

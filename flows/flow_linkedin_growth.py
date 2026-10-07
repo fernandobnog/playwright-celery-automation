@@ -36,24 +36,28 @@ class SniperCommentResult(BaseModel):
 
 
 SNIPER_COMMENT_SYSTEM_INSTRUCTION = """
-Você é Fernando Nogueira, Arquiteto de Soluções e Engenheiro de Software (fernandonogueira.dev.br).
+Você é Fernando Nogueira, Arquiteto de Soluções, CTO da NTAPP e Especialista em IA para o setor jurídico (fernandonogueira.dev.br).
 Você está comentando em um post no LinkedIn de um colega ou líder profissional (TI, Jurídico/LegalOps ou RH).
 
 DIRETRIZES DE ESTILO E VOZ:
-1. EXTENSÃO ULTRA-CURTA: Exatamente 1 a 3 frases curtas (máximo 40 a 55 palavras no total). NUNCA escreva parágrafos longos, pareceres acadêmicos ou relatórios de auditoria.
-2. TOM PESSOAL E HUMANO (1ª PESSOA): Fale como um colega de trincheira trocando ideia sincera no dia a dia. Use expressões naturais como:
-   - "Ponto cirúrgico, [Primeiro Nome]."
-   - "Aqui na prática vejo muito isso acontecer..."
-   - "Concordo, e o gargalo que mais sinto no dia a dia é..."
-   - "Excelente reflexão. Na bancada a gente percebe que..."
-3. MENOS TÉCNICO-ABSTRATO, MAIS PRÁTICO:
-   - Evite jargões frios como "accountability por design", "auditoria de prompts", "rastreabilidade algorítmica estrita".
-   - Prefira falar da realidade prática: a dificuldade de alinhar o time, a pressa de colocar IA sem arrumar os processos antes, a importância de testar antes de colocar em produção.
-4. ZERO CLICHÊS DE IA:
-   - Expressamente proibido usar: "no cenário atual", "no mundo de hoje", "é fundamental", "divisor de águas", "mergulhar fundo", "um verdadeiro farol".
-   - Comece direto no ponto. Nunca use introduções burocráticas ("Li com atenção sua publicação...").
-5. FECHAMENTO SIMPLES:
-   - Termine com uma pergunta curta e natural que estimule uma conversa leve (ex: "Vocês também sentiram esse impacto por aí?", "Como tem sido a adesão do time no dia a dia?").
+1. EXTENSÃO ULTRA-CURTA: Exatamente 1 a 3 frases curtas (máximo 35 a 50 palavras no total). NUNCA escreva parágrafos longos, pareceres acadêmicos ou relatórios de auditoria.
+2. TOM PESSOAL E HUMANO (1ª PESSOA): Fale como um par técnico e executivo de trincheira trocando ideia sincera no dia a dia.
+3. ROTAÇÃO DE ÂNGULOS (NUNCA COMECE IGUAL):
+   Varie o tom e a abertura a cada comentário usando um destes 4 ângulos:
+   - Ângulo 1 (Prática de Engenharia / Realidade de TI): Fale do que acontece quando o sistema vai para produção ("Aqui na bancada a gente nota...", "Quando colocamos rotinas de automação com LLMs na prática...", "O maior atrito técnico que sinto por aqui...")
+   - Ângulo 2 (Nuance / Contraponto Construtivo): Concorde e adicione uma camada nova ("Excelente visão, [Nome]. Além disso, um fator que vejo pesar muito na balança...", "Visão muito necessária, [Nome]. O contraponto que sinto no dia a dia é...")
+   - Ângulo 3 (Visão Executiva & Custos): Fale de ROI, riscos ou tomada de decisão ("Reflexão precisa sobre o custo invisível...", "Concordo 100%, [Nome]. Quem tenta queimar essa etapa acaba pagando a conta do retrabalho...")
+   - Ângulo 4 (Provocação / Debate Aberto): Desafie a discussão com leveza ("Provocação muito pertinente, [Nome]...", "Discussão fundamental. O gargalo mais delicado nessa virada é...")
+4. EXPRESSAMENTE PROIBIDO (TOLERÂNCIA ZERO):
+   - NUNCA use a muleta "Ponto cirúrgico, [Nome]". Isso soa robótico e repetitivo.
+   - NUNCA use clichês de IA: "no cenário atual", "no mundo de hoje", "é fundamental", "divisor de águas", "mergulhar fundo", "um verdadeiro farol", "virada de chave", "navegar por águas".
+   - NUNCA use introduções burocráticas ("Li com atenção sua publicação...", "Parabéns pelo post"). Vá direto ao insight.
+5. DESTINATÁRIO HUMANO (CRÍTICO EM COMPARTILHAMENTOS/REPOSTS):
+   - Dirija-se EXCLUSIVAMENTE ao colega/autor humano pelo primeiro nome ([Primeiro Nome]).
+   - Se o post for um repost ou mencionar empresas, associações ou siglas (ex: ACC, Cia de Talentos, OAB, Gartner), JAMAIS se dirija à sigla ou à empresa. Fale sempre com o profissional [Primeiro Nome].
+6. FECHAMENTO SIMPLES E ESPECÍFICO:
+   - Termine com uma pergunta curta e natural que estimule o autor a responder (ex: "Vocês também sentiram esse gargalo na ponta?", "Como tem sido a governança disso com a liderança?", "Acha que a maturidade do mercado já chegou aí?").
+   - NUNCA repita mecanicamente a mesma pergunta genérica ("Como tem sido a adesão do time no dia a dia?").
 """
 
 
@@ -61,12 +65,25 @@ def generate_sniper_comment(
     post_text: str,
     author_name: str,
     nicho: str,
+    target_name: Optional[str] = None,
     gemini_client: Optional[GeminiClient] = None,
 ) -> SniperCommentResult:
     """
     Synthesizes a short, punchy, human sniper comment using Gemini and Few-Shot style memory.
     """
     gemini = gemini_client or GeminiClient()
+
+    # Determine human recipient: always prioritize the target_name to prevent repost hallucination (e.g. ACC, Cia)
+    human_recipient = (target_name or author_name or "").strip()
+    author_first_name = human_recipient.split()[0] if human_recipient else ""
+
+    repost_note = ""
+    if target_name and author_name and target_name.strip().lower() != author_name.strip().lower():
+        repost_note = (
+            f"\nATENÇÃO AO DESTINATÁRIO: O autor que estamos engajando no LinkedIn é {human_recipient} (Primeiro nome: {author_first_name}). "
+            f"Ele compartilhou um post originalmente de '{author_name}'. "
+            f"Dirija-se EXCLUSIVAMENTE a {author_first_name}. JAMAIS se dirija a '{author_name}' e NUNCA use siglas ou empresas como destinatário.\n"
+        )
 
     few_shot_section = ""
     try:
@@ -89,17 +106,16 @@ def generate_sniper_comment(
     except Exception as e:
         logger.debug("Could not fetch Cognee style context: %s", e)
 
-    author_first_name = author_name.split()[0] if author_name else ""
-
     prompt = (
-        f"Analise a publicação recente no LinkedIn do autor '{author_name}' (Primeiro nome: {author_first_name}, Nicho: {nicho}):\n\n"
+        f"Analise a publicação recente no LinkedIn do autor '{human_recipient}' (Primeiro nome: {author_first_name}, Nicho: {nicho}):\n\n"
         f"--- CONTEÚDO DO POST ---\n"
         f"{post_text[:2500]}\n"
         f"-------------------------\n"
+        f"{repost_note}"
         f"{few_shot_section}\n"
         f"{cognee_section}\n"
-        f"Redija um comentário curto, descontraído, pessoal (em 1ª pessoa) e cirúrgico (1 a 3 frases, máximo 50 palavras). "
-        f"Conecte diretamente com {author_first_name or 'o autor'} e termine com uma pergunta curta e envolvente."
+        f"Redija um comentário autêntico, pessoal (em 1ª pessoa), conciso (1 a 3 frases, máximo 45 palavras) e de alto valor. "
+        f"Conecte diretamente com {author_first_name or 'o autor'} e termine com uma pergunta específica e envolvente."
     )
 
     result: SniperCommentResult = gemini.generate_structured(
@@ -191,21 +207,30 @@ def task_linkedin_sniper_radar(self, batch_size: int = 4) -> Dict[str, Any]:
         logger.info("Inspecting target %s (%s)...", target_nome, profile_url)
 
         try:
-            latest_post = linkedin_publisher.get_latest_post_from_profile(profile_url)
+            latest_post = linkedin_publisher.get_latest_post_from_profile(
+                profile_url=profile_url,
+                max_age_days=5.0,
+                target_name=target_nome,
+            )
             # Update check timestamp
             post_id = latest_post.get("post_id") if latest_post else None
             repo.update_target_last_check(target_id, post_id or last_seen_post_id)
 
             if not latest_post or not latest_post.get("text"):
-                logger.info("No new content found for target %s.", target_nome)
+                logger.info("Nenhum post recente (máximo 5 dias) encontrado para o alvo %s.", target_nome)
                 continue
 
-            post_url = latest_post.get("post_url") or profile_url
+            post_url = latest_post.get("post_url")
+            if not post_url or post_url == profile_url:
+                logger.warning("Post encontrado para %s não possui URL válida de publicação (%s). Ignorando.", target_nome, post_url)
+                continue
+
             post_text = latest_post["text"]
             post_author = latest_post.get("author") or target_nome
             time_text = latest_post.get("time_text", "")
+            age_days = latest_post.get("age_days", 0.0)
 
-            # Check if this post ID was already checked or exists in comments
+            # Check if this post ID or URL was already checked or exists in comments
             existing_comment = repo.get_connection().execute(
                 "SELECT id FROM linkedin_growth_comments WHERE post_url = ?",
                 (post_url,),
@@ -222,20 +247,21 @@ def task_linkedin_sniper_radar(self, batch_size: int = 4) -> Dict[str, Any]:
                 logger.info("Post %s from %s already processed. Skipping.", post_url, target_nome)
                 continue
 
-            logger.info("New post detected for %s! Generating sniper comment...", target_nome)
+            logger.info("New post detected for %s (age=%.1fd)! Generating sniper comment...", target_nome, age_days)
             comment_res = generate_sniper_comment(
                 post_text=post_text,
                 author_name=post_author,
                 nicho=nicho,
+                target_name=target_nome,
                 gemini_client=gemini,
             )
 
-            # Save draft in SQLite
+            # Save draft in SQLite (full text up to 10,000 characters)
             comment_id = repo.save_linkedin_growth_comment(
                 target_id=target_id,
                 target_nome=target_nome,
                 post_url=post_url,
-                post_texto=post_text[:1500],
+                post_texto=post_text[:10000],
                 post_autor=post_author,
                 comentario_gerado=comment_res.comentario,
             )
@@ -264,7 +290,7 @@ def task_linkedin_sniper_radar(self, batch_size: int = 4) -> Dict[str, Any]:
             wa_text = (
                 f"🎯 *SNIPER LINKEDIN: NOVO POST DETECTADO*\n\n"
                 f"👤 *Autor:* {target_nome} [{nicho}]\n"
-                f"⏱️ *Publicado há:* {time_text or 'recente'}\n"
+                f"⏱️ *Publicado há:* {time_text or 'recente'} (<= 5 dias)\n"
                 f"🔗 *Post Original:* {post_url}\n\n"
                 f"📝 *Trecho do Post:*\n\"{snippet}...\"\n\n"
                 f"💡 *Sugestão de Comentário (Pessoal & Conciso):*\n\"{comment_res.comentario}\"\n\n"
@@ -330,6 +356,13 @@ def task_publish_approved_linkedin_comment(self, comment_id: int) -> Dict[str, A
         post_url=post_url,
         comment_text=comentario,
     )
+
+    # Also register organic like reaction on the post
+    try:
+        linkedin_publisher.like_post(post_url=post_url)
+        logger.info("Automatically liked post %s alongside comment #%d.", post_url, comment_id)
+    except Exception as err_like:
+        logger.warning("Could not like post %s alongside comment #%d: %s", post_url, comment_id, err_like)
 
     # Mark as published in repository
     repo.update_linkedin_growth_comment_status(comment_id=comment_id, status="PUBLISHED")

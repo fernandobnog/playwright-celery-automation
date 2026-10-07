@@ -4,7 +4,7 @@ Enables zero-bureaucracy automated posting to LinkedIn Feed & Pulse using a pers
 shared authenticated browser session across all Celery workers.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import logging
 from pathlib import Path
@@ -12,6 +12,7 @@ import random
 import re
 import time
 from typing import Any, Dict, Optional
+import urllib.request
 import markdown
 from playwright.sync_api import BrowserContext, Page, sync_playwright
 from redis import Redis
@@ -81,6 +82,79 @@ def markdown_to_linkedin_pulse_html(md_text: str, blog_url: Optional[str] = None
         )
 
     return html_output
+
+
+def parse_post_age(post_id_or_url: str, time_text: str = "", max_age_days: float = 5.0) -> tuple[bool, float, Optional[str]]:
+    """
+    Validates whether a LinkedIn post was published within max_age_days (default: 5.0 days).
+    Uses both LinkedIn Snowflake 19-digit timestamp (id >> 22) and textual relative timestamp.
+    Returns (is_recent, age_days, post_iso_datetime).
+    """
+    now_utc = datetime.now(timezone.utc)
+    snowflake_age = None
+    post_dt = None
+
+    # 1. Extract 19-digit snowflake integer
+    match = re.search(r'(?:urn:li:(?:activity|ugcPost|share):|/feed/update/urn:li:(?:activity|ugcPost|share):)?([7]\d{17,19})', post_id_or_url or '')
+    if match:
+        try:
+            num_id = int(match.group(1))
+            ms = num_id >> 22
+            if 1577836800000 <= ms <= 1893456000000:
+                post_dt = datetime.fromtimestamp(ms / 1000.0, timezone.utc)
+                diff = (now_utc - post_dt).total_seconds() / 86400.0
+                snowflake_age = max(0.0, diff)
+        except Exception:
+            pass
+
+    # 2. Textual relative time
+    text_age = None
+    if time_text:
+        tt = time_text.lower().strip()
+        if any(w in tt for w in ['agora', 'just now', 'min', 'm ']):
+            text_age = 0.05
+        t_match = re.search(r'(\d+)\s*(h|d|sem|m|min|mo|yr|a|s|w)\b', tt)
+        if t_match:
+            val = int(t_match.group(1))
+            unit = t_match.group(2)
+            if unit in ['s', 'min']:
+                text_age = 0.01
+            elif unit == 'h':
+                text_age = val / 24.0
+            elif unit == 'd':
+                text_age = float(val)
+            elif unit in ['sem', 'w']:
+                text_age = float(val * 7)
+            elif unit in ['m', 'mo']:
+                text_age = float(val * 30)
+            elif unit in ['a', 'yr', 'y']:
+                text_age = float(val * 365)
+
+    if text_age is not None:
+        age = text_age
+    elif snowflake_age is not None:
+        age = snowflake_age
+    else:
+        return False, 999.0, None
+
+    is_recent = age <= max_age_days
+    return is_recent, age, post_dt.isoformat() if post_dt else None
+
+
+def resolve_linkedin_url(url: str) -> str:
+    """Follows lnkd.in shortlink redirects to retrieve the canonical LinkedIn post URL."""
+    if not url:
+        return url
+    if "lnkd.in" in url:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": PERSISTENT_USER_AGENT})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                resolved = resp.url
+                if resolved and "linkedin.com" in resolved:
+                    return resolved.split("?")[0]
+        except Exception:
+            pass
+    return url.split("?")[0]
 
 
 class LinkedInPublisher:
@@ -483,6 +557,7 @@ class LinkedInPublisher:
         content_markdown: str,
         image_path: Optional[str] = None,
         blog_url: Optional[str] = None,
+        share_hook: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Publishes a long-form article to LinkedIn Pulse (https://www.linkedin.com/article/new/).
@@ -712,9 +787,16 @@ class LinkedInPublisher:
                 # 6. In the post-sharing modal, add optional hook and click primary Publicar
                 share_input = page.locator("div[role='dialog'] div[role='textbox'], div[role='dialog'] div.ProseMirror, div[role='dialog'] div.tiptap, div[role='dialog'] [contenteditable='true'], div[role='dialog'] div.ql-editor").first
                 if share_input.is_visible(timeout=5000):
-                    share_hook = f"Compartilho meu novo artigo de liderança no LinkedIn: '{title.strip()}'. Leitura completa abaixo 👇"
+                    if share_hook and share_hook.strip():
+                        final_hook = share_hook.strip()
+                    else:
+                        final_hook = (
+                            f"Artigo novo no LinkedIn Pulse: {title.strip()}.\n\n"
+                            f"Compartilho uma reflexão prática e técnica sobre os impactos reais dessa transformação no dia a dia executivo e operacional.\n\n"
+                            f"Confira a análise completa abaixo e deixe sua perspectiva nos comentários: 👇"
+                        )
                     logger.info("Typing share modal hook with human cadence...")
-                    human_type(page, share_input, share_hook, min_delay_ms=35, max_delay_ms=90)
+                    human_type(page, share_input, final_hook, min_delay_ms=35, max_delay_ms=90)
                     human_sleep(2.0, 3.5)
 
                 # Click primary action publish button (not the audience settings button)
@@ -767,12 +849,19 @@ class LinkedInPublisher:
                 if browser:
                     browser.close()
 
-    def get_latest_post_from_profile(self, profile_url: str) -> Optional[Dict[str, Any]]:
+    def get_latest_post_from_profile(
+        self,
+        profile_url: str,
+        max_age_days: float = 5.0,
+        target_name: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
         """
-        Navigates to the target profile's recent activity feed and extracts the latest publication.
-        Returns a dict with post_id, post_url, text, author, and time_text, or None if no post found.
+        Navigates to the target profile's recent activity feed and extracts the latest publication
+        strictly authored/posted within max_age_days (default: 5.0 days).
+        Filters out reactions/comments on third-party posts and old publications.
+        Returns a dict with post_id, post_url, text, author, time_text, age_days, or None if no recent post found.
         """
-        logger.info("Checking latest activity for profile: %s", profile_url)
+        logger.info("Checking latest activity for profile: %s (max_age_days=%.1f, target=%s)", profile_url, max_age_days, target_name)
         state_file = self.sync_session_from_redis_or_disk()
 
         with sync_playwright() as p:
@@ -792,6 +881,7 @@ class LinkedInPublisher:
                     user_agent=PERSISTENT_USER_AGENT,
                     locale="pt-BR",
                     timezone_id="America/Sao_Paulo",
+                    permissions=["clipboard-read", "clipboard-write"],
                 )
                 page = context.pages[0] if context.pages else context.new_page()
             else:
@@ -801,6 +891,7 @@ class LinkedInPublisher:
                     "user_agent": PERSISTENT_USER_AGENT,
                     "locale": "pt-BR",
                     "timezone_id": "America/Sao_Paulo",
+                    "permissions": ["clipboard-read", "clipboard-write"],
                 }
                 if state_file:
                     context_kwargs["storage_state"] = state_file
@@ -812,173 +903,152 @@ class LinkedInPublisher:
             try:
                 self.ensure_authenticated(page, context)
 
-                activity_url = profile_url.rstrip("/") + "/recent-activity/all/"
+                clean_profile = profile_url.rstrip("/")
+                activity_url = clean_profile + "/recent-activity/all/"
                 logger.info("Visiting activity feed: %s", activity_url)
                 page.goto(activity_url, wait_until="domcontentloaded", timeout=30000)
                 human_sleep(2.0, 3.5)
+
+                # Check if profile or activity feed does not exist (404)
+                body_text = page.locator("body").inner_text()
+                if any(msg in body_text for msg in ["Esta página não existe", "Page not found", "Não foi possível encontrar"]):
+                    logger.warning("Target profile activity feed not found (404): %s", activity_url)
+                    return None
 
                 try:
                     human_scroll(page, steps=random.randint(1, 2), min_distance=150, max_distance=300)
                 except Exception:
                     pass
 
-                # Expand 'mais' / 'see more' buttons if any
-                more_btns = page.locator("button:has-text('mais'), button:has-text('see more')")
-                for i in range(min(3, more_btns.count())):
-                    try:
-                        b = more_btns.nth(i)
-                        if b.is_visible():
-                            b.click(timeout=1000)
-                    except Exception:
-                        pass
+                # Expand 'mais' / 'see more' buttons to unhide full post text
+                page.evaluate("""() => {
+                    document.querySelectorAll('button').forEach(b => {
+                        const txt = (b.innerText || '').trim().toLowerCase();
+                        if (txt === 'mais' || txt === '…mais' || txt === 'ver mais' || txt === 'see more') {
+                            try { b.click(); } catch(e){}
+                        }
+                    });
+                }""")
+                human_sleep(0.8, 1.2)
 
-                # Locate feed updates: supports both modern LinkedIn UI and classic selectors
-                update_links = page.locator("a[href*='/feed/update/']")
-                if update_links.count() > 0:
-                    first_link = update_links.first
-                    raw_href = first_link.get_attribute("href") or ""
-                    post_url = raw_href.split("?")[0]
+                # Locate feed update cards inside main feed
+                card_locators = page.locator('div[role="listitem"], div.feed-shared-update-v2, li.profile-creator-shared-feed-update__container').all()
+                if not card_locators:
+                    card_locators = page.locator('main section li').all()
+
+                logger.info("Found %d candidate cards in recent activity feed for %s", len(card_locators), target_name or profile_url)
+
+                for idx, card in enumerate(card_locators[:10]):
+                    card_text = card.inner_text().strip()
+                    if not card_text or len(card_text) < 40:
+                        continue
+
+                    # 1. Skip reactions / comments on third-party posts (e.g. 'Daniel Becker curtiu isso')
+                    lines = [l.strip() for l in card_text.split("\n") if l.strip()]
+                    header_area = " ".join(lines[:4]).lower()
+                    if any(act in header_area for act in [
+                        "curtiu isso", "comentou isso", "apoia isso", "adorou isso", "celebrou isso",
+                        "liked this", "commented on this", "celebrated this", "supports this"
+                    ]):
+                        logger.info("Card #%d skipped: target merely reacted to a third-party post ('%s')", idx, lines[0] if lines else "")
+                        continue
+
+                    # 2. Extract author
+                    author = target_name or ""
+                    author_loc = card.locator(".update-components-actor__name, .feed-shared-actor__name, h3, strong").first
+                    if author_loc.count() > 0:
+                        author = author_loc.inner_text().strip() or author
+
+                    # 3. Extract time text (top-level timestamp of this post)
+                    time_match = re.search(r'(\d+\s*(?:h|d|sem|m|min|mo|yr|a|s)\b(?:\s*•\s*Editado)?)', card_text, re.IGNORECASE)
+                    time_text = time_match.group(1) if time_match else ""
+
+                    # 4. Extract canonical post URL via control menu
+                    canonical_url = None
+                    ctrl_btn = card.locator('button[aria-label*="controle"], button[aria-label*="opções"], button[aria-label*="control"]').first
+                    if ctrl_btn.is_visible():
+                        try:
+                            ctrl_btn.click(timeout=1000)
+                            page.wait_for_timeout(400)
+                            menu_items = page.locator('div[role="menu"] *').all()
+                            for it in menu_items:
+                                try:
+                                    it_txt = it.inner_text().strip().lower()
+                                    if "copiar link" in it_txt or "copy link" in it_txt:
+                                        it.click(timeout=1000)
+                                        page.wait_for_timeout(400)
+                                        clip_text = page.evaluate("navigator.clipboard.readText()")
+                                        if clip_text and ("http://" in clip_text or "https://" in clip_text):
+                                            canonical_url = resolve_linkedin_url(clip_text.strip())
+                                            break
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+
+                    # Fallback URL from direct card links
+                    fallback_url = None
+                    link_loc = card.locator('a[href*="/feed/update/"], a[href*="/posts/"]').first
+                    if link_loc.count() > 0:
+                        raw_href = (link_loc.get_attribute("href") or "").split("?")[0]
+                        if raw_href:
+                            fallback_url = raw_href
+
+                    post_url = canonical_url or fallback_url
+                    if not post_url:
+                        logger.debug("Card #%d: Could not resolve a valid post URL. Skipping.", idx)
+                        continue
 
                     # Extract post ID
                     post_id = post_url
                     if "urn:li:" in post_url:
-                        urn_part = post_url.split("urn:li:")[-1].split("/")[0]
-                        post_id = f"urn:li:{urn_part}"
+                        post_id = "urn:li:" + post_url.split("urn:li:")[-1].split("/")[0]
 
-                    extracted_data = first_link.evaluate("""(link) => {
-                        let el = link;
-                        let card = null;
-                        while (el && el !== document.body && el.tagName !== 'MAIN') {
-                            if (el.tagName === 'LI' || (el.parentElement && el.parentElement.tagName === 'MAIN')) {
-                                card = el;
-                                break;
-                            }
-                            if (el.offsetHeight > 100 && el.innerText.length > 50) {
-                                card = el;
-                            }
-                            el = el.parentElement;
-                        }
-                        if (!card) card = link.parentElement;
+                    # 5. Strict Age Verification (Maximum 5 Days)
+                    is_recent, age_days, post_dt = parse_post_age(post_id, time_text, max_age_days=max_age_days)
+                    logger.info("Card #%d: Time='%s' | Age=%.2fd | Recent=%s | URL=%s", idx, time_text, age_days, is_recent, post_url)
 
-                        // Author
-                        let author = '';
-                        const authorEl = card.querySelector('.update-components-actor__name, .feed-shared-actor__name, h3, strong');
-                        if (authorEl) {
-                            author = authorEl.innerText.trim();
-                        }
+                    if not is_recent:
+                        logger.info("Card #%d skipped: post is older than %.1f days (%.1fd ago).", idx, max_age_days, age_days)
+                        continue
 
-                        // Time text
-                        let timeText = '';
-                        const timeMatch = card.innerText.match(/(\\d+\\s*(?:h|d|sem|m|min|mo|yr|a|s)\\b(?:\\s*•\\s*Editado)?)/i);
-                        if (timeMatch) {
-                            timeText = timeMatch[1];
-                        }
-
-                        // Text nodes sorted by length
-                        const textNodes = Array.from(card.querySelectorAll('span, p, div'))
-                            .map(n => n.innerText ? n.innerText.trim() : '')
-                            .filter(t => t.length > 40 && !t.includes('Seguir') && !t.includes('Conectar') && !t.includes('Todas as atividades'));
-                        textNodes.sort((a, b) => b.length - a.length);
-
-                        return {
-                            author: author,
-                            time_text: timeText,
-                            best_text: textNodes[0] || card.innerText
-                        };
+                    # 6. Extract full clean post text
+                    clean_text = card.evaluate("""el => {
+                        const clone = el.cloneNode(true);
+                        clone.querySelectorAll('button, svg, nav, [class*="action"], [class*="social"], [class*="control"], [class*="reactions"]').forEach(n => n.remove());
+                        return clone.innerText.trim();
                     }""")
 
-                    author = extracted_data.get("author") or ""
-                    time_text = extracted_data.get("time_text") or ""
-                    text = extracted_data.get("best_text") or ""
+                    cleaned_lines = [l.strip() for l in clean_text.split("\n") if l.strip()]
+                    filtered_lines = [
+                        l for l in cleaned_lines
+                        if l not in ["Publicação no feed", "Seguir", "Visualizar no LinkedIn", "• 2º", "• 1º", "• 3º", "Visualizações do perfil"]
+                    ]
+                    post_text = "\n\n".join(filtered_lines)
 
-                    logger.info("Found latest post (modern UI): ID=%s, Author=%s, Time=%s, Text len=%d", post_id, author, time_text, len(text))
+                    if len(post_text) < 30:
+                        logger.debug("Card #%d: Extracted text too short (%d chars). Skipping.", idx, len(post_text))
+                        continue
+
+                    logger.info(
+                        "Found valid modern post (<= %.1fd) for %s: ID=%s, Time=%s, Text len=%d, URL=%s",
+                        max_age_days, author, post_id, time_text, len(post_text), post_url
+                    )
                     return {
                         "post_id": post_id,
                         "post_url": post_url,
-                        "text": text,
+                        "text": post_text,
                         "author": author,
                         "time_text": time_text,
+                        "age_days": age_days,
+                        "post_date": post_dt,
                     }
 
-                # Fallback: Classic feed selectors
-                update_selectors = [
-                    "div.feed-shared-update-v2",
-                    "div[data-urn*='urn:li:activity']",
-                    "div.occludable-update",
-                ]
+                logger.info("No publications within %.1f days found for %s (%s).", max_age_days, target_name or "Target", profile_url)
+                return None
 
-                first_card = None
-                for sel in update_selectors:
-                    cards = page.locator(sel)
-                    if cards.count() > 0:
-                        first_card = cards.first
-                        break
-
-                if not first_card:
-                    logger.info("No recent activity updates detected on %s", profile_url)
-                    return None
-
-                # Extract URN / post ID
-                data_urn = first_card.get_attribute("data-urn") or ""
-                if not data_urn:
-                    urn_loc = first_card.locator("[data-urn*='urn:li:activity']").first
-                    if urn_loc.count() > 0:
-                        data_urn = urn_loc.get_attribute("data-urn") or ""
-
-                post_id = data_urn or ""
-                post_url = ""
-                if "urn:li:activity:" in data_urn:
-                    activity_id = data_urn.split("urn:li:activity:")[-1].split(":")[0]
-                    post_url = f"https://www.linkedin.com/feed/update/urn:li:activity:{activity_id}/"
-                    post_id = f"urn:li:activity:{activity_id}"
-                else:
-                    link_loc = first_card.locator("a[href*='/feed/update/']").first
-                    if link_loc.count() > 0:
-                        href = link_loc.get_attribute("href") or ""
-                        post_url = href.split("?")[0]
-                        post_id = post_url
-
-                if not post_url:
-                    post_url = activity_url
-
-                # Extract post text
-                text = ""
-                for text_sel in [
-                    ".feed-shared-update-v2__description",
-                    ".feed-shared-text",
-                    ".update-components-text",
-                    "div.feed-shared-inline-show-more-text",
-                    "span.break-words",
-                ]:
-                    t_loc = first_card.locator(text_sel).first
-                    if t_loc.count() > 0 and t_loc.is_visible():
-                        text = t_loc.inner_text().strip()
-                        if len(text) > 20:
-                            break
-
-                if not text:
-                    text = first_card.inner_text()[:600].strip()
-
-                time_text = ""
-                time_loc = first_card.locator(".feed-shared-actor__sub-description, time, span.feed-shared-actor__sub-description span").first
-                if time_loc.count() > 0:
-                    time_text = time_loc.inner_text().strip()
-
-                author = ""
-                author_loc = first_card.locator(".feed-shared-actor__name, span.update-components-actor__name, span[dir='ltr']").first
-                if author_loc.count() > 0:
-                    author = author_loc.inner_text().strip()
-
-                logger.info("Found latest post: ID=%s, Author=%s, Time=%s, Text len=%d", post_id, author, time_text, len(text))
-                return {
-                    "post_id": post_id,
-                    "post_url": post_url,
-                    "text": text,
-                    "author": author,
-                    "time_text": time_text,
-                }
             except Exception as e:
-                logger.error("Error inspecting profile activity (%s): %s", profile_url, e)
+                logger.error("Error inspecting profile activity (%s): %s", profile_url, e, exc_info=True)
                 return None
             finally:
                 context.close()

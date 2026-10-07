@@ -403,11 +403,13 @@ def publish_reviewed_editorial(
         # 4.2 LinkedIn Pulse Article (if present)
         if package.linkedin_artigo_titulo and package.linkedin_artigo_corpo:
             try:
+                feed_hook = (package.linkedin_post_feed or "").strip()
                 pulse_res = linkedin_client.publish_pulse_article(
                     title=package.linkedin_artigo_titulo,
                     content_markdown=package.linkedin_artigo_corpo,
                     image_path=cover_image_path,
                     blog_url=blog_url,
+                    share_hook=feed_hook or None,
                 )
                 publication_results["linkedin_pulse"] = pulse_res
             except Exception as e_pulse:
