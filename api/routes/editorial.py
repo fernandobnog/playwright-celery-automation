@@ -2100,3 +2100,65 @@ async def trigger_linkedin_radar():
     }
 
 
+# ─── LinkedIn Connection Autopilot Endpoints ─────────────────────────────────
+
+@router.get("/linkedin-autopilot")
+async def get_linkedin_autopilot_overview():
+    """
+    Returns stats and recent prospects for LinkedIn Connection Autopilot.
+    """
+    stats = repo.get_autopilot_stats()
+    pending = repo.get_pending_autopilot_prospects(limit=30)
+    recent = repo.get_all_autopilot_prospects(limit=50)
+    return {
+        "status": "SUCCESS",
+        "stats": stats,
+        "pending": pending,
+        "recent": recent,
+    }
+
+
+@router.post("/linkedin-autopilot/discover")
+async def trigger_linkedin_autopilot_discovery():
+    """
+    Triggers an immediate discovery run across active LinkedIn targets to harvest ICP prospects.
+    """
+    from flows.flow_linkedin_autopilot import task_linkedin_autopilot_discovery
+    async_task = task_linkedin_autopilot_discovery.delay(batch_targets=3)
+    return {
+        "status": "SUCCESS",
+        "task_id": async_task.id,
+        "message": "Discovery do Autopilot disparado em segundo plano!",
+    }
+
+
+@router.post("/linkedin-autopilot/invite")
+async def trigger_linkedin_autopilot_inviter(batch_size: int = 4):
+    """
+    Triggers an immediate safe batch of connection invites to pending prospects.
+    """
+    from flows.flow_linkedin_autopilot import task_linkedin_autopilot_inviter
+    async_task = task_linkedin_autopilot_inviter.delay(batch_size=batch_size, daily_limit=15)
+    return {
+        "status": "SUCCESS",
+        "task_id": async_task.id,
+        "message": f"Disparo de convites do Autopilot ({batch_size} perfis) iniciado em segundo plano!",
+    }
+
+
+@router.post("/linkedin-autopilot/prospects/{prospect_id}/skip")
+async def skip_linkedin_autopilot_prospect(prospect_id: int):
+    """
+    Skips a discovered prospect from receiving connection invites.
+    """
+    ok = repo.update_autopilot_prospect_status(prospect_id=prospect_id, status="SKIPPED")
+    if not ok:
+        raise HTTPException(status_code=404, detail="Prospect not found.")
+    return {
+        "status": "SUCCESS",
+        "prospect_id": prospect_id,
+        "message": "Prospect marcado como pulado.",
+    }
+
+
+

@@ -11,7 +11,7 @@ from pathlib import Path
 import random
 import re
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 import urllib.request
 import markdown
 from playwright.sync_api import BrowserContext, Page, sync_playwright
@@ -1307,6 +1307,245 @@ class LinkedInPublisher:
             except Exception as e:
                 logger.error("Failed to like LinkedIn post %s: %s", post_url, e)
                 raise
+            finally:
+                context.close()
+                if browser:
+                    browser.close()
+
+    def extract_prospects_from_post(self, post_url: str, limit: int = 15) -> List[Dict[str, str]]:
+        """
+        Navigates to a post, scrolls to load comments and engagements,
+        and extracts profile links and headlines of active engagers.
+        """
+        logger.info("Extracting engager prospects from post: %s (limit=%d)", post_url, limit)
+        state_file = self.sync_session_from_redis_or_disk()
+
+        with sync_playwright() as p:
+            browser = None
+            if settings.PLAYWRIGHT_USER_DATA_DIR and Path(settings.PLAYWRIGHT_USER_DATA_DIR).exists():
+                context = p.chromium.launch_persistent_context(
+                    user_data_dir=settings.PLAYWRIGHT_USER_DATA_DIR,
+                    headless=self.headless,
+                    args=["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-dev-shm-usage"],
+                    viewport={"width": 1280, "height": 850},
+                    user_agent=PERSISTENT_USER_AGENT,
+                    locale="pt-BR",
+                    timezone_id="America/Sao_Paulo",
+                )
+                page = context.pages[0] if context.pages else context.new_page()
+            else:
+                browser = p.chromium.launch(headless=self.headless, args=["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-dev-shm-usage"])
+                context_kwargs = {
+                    "viewport": {"width": 1280, "height": 850},
+                    "user_agent": PERSISTENT_USER_AGENT,
+                    "locale": "pt-BR",
+                    "timezone_id": "America/Sao_Paulo",
+                }
+                if state_file:
+                    context_kwargs["storage_state"] = state_file
+                context = browser.new_context(**context_kwargs)
+                page = context.new_page()
+
+            context.add_init_script(STEALTH_EVASION_SCRIPT)
+
+            try:
+                self.ensure_authenticated(page, context)
+                page.goto(post_url, wait_until="domcontentloaded", timeout=30000)
+                human_sleep(2.5, 4.0)
+
+                # Scroll down to load comments
+                try:
+                    human_scroll(page, steps=random.randint(2, 4), min_distance=200, max_distance=400)
+                except Exception:
+                    pass
+
+                # Extract all profile links from post
+                links = page.locator('a[href*="/in/"]').all()
+                prospects = []
+                seen_urls = set()
+
+                for l in links:
+                    try:
+                        href = l.get_attribute("href") or ""
+                        clean_url = href.split("?")[0].rstrip("/")
+                        if not clean_url or "nogueira-fernando" in clean_url:
+                            continue
+                        if clean_url in seen_urls:
+                            continue
+
+                        # Extract name
+                        name = l.inner_text().strip()
+                        # Extract parent container text as potential headline context
+                        parent_text = ""
+                        try:
+                            parent_text = l.evaluate("el => el.parentElement.parentElement ? el.parentElement.parentElement.innerText : ''")
+                        except Exception:
+                            pass
+
+                        headline = ""
+                        if parent_text:
+                            lines = [ln.strip() for ln in parent_text.split("\n") if ln.strip() and ln.strip() != name]
+                            if lines:
+                                headline = lines[0]
+
+                        if name and len(name) > 2:
+                            seen_urls.add(clean_url)
+                            prospects.append({
+                                "profile_url": clean_url,
+                                "nome": name,
+                                "headline": headline[:150],
+                            })
+                            if len(prospects) >= limit:
+                                break
+                    except Exception:
+                        continue
+
+                logger.info("Discovered %d prospects on post %s", len(prospects), post_url)
+                return prospects
+
+            except Exception as e:
+                logger.error("Failed to extract prospects from post %s: %s", post_url, e)
+                return []
+            finally:
+                context.close()
+                if browser:
+                    browser.close()
+
+    def send_connection_invite(self, profile_url: str, note_text: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Navigates to a prospect profile and sends a humanized connection invitation
+        with optional personalized note.
+        """
+        logger.info("Initiating connection invite to: %s (with_note=%s)", profile_url, bool(note_text))
+        state_file = self.sync_session_from_redis_or_disk()
+
+        with sync_playwright() as p:
+            browser = None
+            if settings.PLAYWRIGHT_USER_DATA_DIR and Path(settings.PLAYWRIGHT_USER_DATA_DIR).exists():
+                context = p.chromium.launch_persistent_context(
+                    user_data_dir=settings.PLAYWRIGHT_USER_DATA_DIR,
+                    headless=self.headless,
+                    args=["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-dev-shm-usage"],
+                    viewport={"width": 1280, "height": 850},
+                    user_agent=PERSISTENT_USER_AGENT,
+                    locale="pt-BR",
+                    timezone_id="America/Sao_Paulo",
+                )
+                page = context.pages[0] if context.pages else context.new_page()
+            else:
+                browser = p.chromium.launch(headless=self.headless, args=["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-dev-shm-usage"])
+                context_kwargs = {
+                    "viewport": {"width": 1280, "height": 850},
+                    "user_agent": PERSISTENT_USER_AGENT,
+                    "locale": "pt-BR",
+                    "timezone_id": "America/Sao_Paulo",
+                }
+                if state_file:
+                    context_kwargs["storage_state"] = state_file
+                context = browser.new_context(**context_kwargs)
+                page = context.new_page()
+
+            context.add_init_script(STEALTH_EVASION_SCRIPT)
+
+            try:
+                self.ensure_authenticated(page, context)
+                page.goto(profile_url, wait_until="domcontentloaded", timeout=30000)
+                human_sleep(3.0, 5.0)
+
+                top_card = page.locator("main section").first
+
+                # 1. Check if already connected (1º grau)
+                top_text = top_card.inner_text() if top_card.count() > 0 else ""
+                if "• 1º" in top_text or "1st" in top_text:
+                    logger.info("Profile %s is already a 1st degree connection. Skipping.", profile_url)
+                    return {"status": "ALREADY_CONNECTED", "profile_url": profile_url}
+
+                # 2. Check if already pending
+                pending_btn = top_card.locator("button:has-text('Pendente'), button:has-text('Pending')").first
+                if pending_btn.count() > 0 and pending_btn.is_visible():
+                    logger.info("Invitation to %s is already pending. Skipping.", profile_url)
+                    return {"status": "ALREADY_PENDING", "profile_url": profile_url}
+
+                # 3. Locate connection trigger
+                # Try direct connect button on top card
+                direct_conn = top_card.locator('a[href*="custom-invite"], button[aria-label*="para se conectar"], button:has-text("Conectar"), button:has-text("Connect")').first
+                triggered = False
+
+                if direct_conn.count() > 0 and direct_conn.is_visible():
+                    logger.info("Found direct connect button. Triggering...")
+                    try:
+                        direct_conn.dispatch_event("click")
+                        triggered = True
+                    except Exception:
+                        direct_conn.click(force=True)
+                        triggered = True
+
+                # If direct button not found or creator profile, check "Mais" dropdown
+                if not triggered:
+                    mais_btn = top_card.locator('button:has-text("Mais"), button[aria-label*="Mais ações"], button:has-text("More")').first
+                    if mais_btn.count() > 0 and mais_btn.is_visible():
+                        logger.info("Opening 'Mais' menu to find Conectar option...")
+                        mais_btn.click()
+                        human_sleep(1.0, 1.8)
+
+                        conn_menu_item = page.locator('div[role="menu"] a[href*="custom-invite"], div[role="menu"] [componentkey*="ConnectButton"], div[role="menu"] p:has-text("Conectar")').first
+                        if conn_menu_item.count() > 0 and conn_menu_item.is_visible():
+                            logger.info("Found Conectar item in menu. Triggering...")
+                            try:
+                                conn_menu_item.dispatch_event("click")
+                                triggered = True
+                            except Exception:
+                                conn_menu_item.click(force=True)
+                                triggered = True
+
+                if not triggered:
+                    logger.warning("No connect button or menu item available for %s.", profile_url)
+                    return {"status": "NO_CONNECT_OPTION", "profile_url": profile_url}
+
+                human_sleep(2.0, 3.5)
+
+                # 4. Handle connection dialog
+                dialog = page.locator('dialog, div[role="dialog"]').filter(has_text="Adicionar nota").first
+                if not dialog.is_visible(timeout=6000):
+                    dialog = page.locator('dialog, div[role="dialog"], .artdeco-modal').first
+
+                if dialog.count() > 0 and dialog.is_visible():
+                    if note_text and note_text.strip():
+                        add_note_btn = dialog.locator('button:has-text("Adicionar nota"), button:has-text("Add a note")').first
+                        if add_note_btn.count() > 0 and add_note_btn.is_visible():
+                            logger.info("Adding personalized invitation note...")
+                            add_note_btn.click()
+                            human_sleep(1.0, 2.0)
+
+                            textarea = dialog.locator('textarea, div[role="textbox"]').first
+                            if textarea.count() > 0 and textarea.is_visible():
+                                human_type(page, textarea, note_text.strip()[:290], min_delay_ms=25, max_delay_ms=65)
+                                human_sleep(1.5, 2.5)
+
+                        send_btn = dialog.locator('button:has-text("Enviar"), button:has-text("Send")').last
+                        if send_btn.count() > 0 and send_btn.is_visible():
+                            send_btn.click()
+                            logger.info("Clicked Enviar with note.")
+                    else:
+                        send_no_note = dialog.locator('button:has-text("Enviar sem nota"), button:has-text("Send without a note"), button:has-text("Enviar")').first
+                        if send_no_note.count() > 0 and send_no_note.is_visible():
+                            send_no_note.click()
+                            logger.info("Clicked Enviar sem nota.")
+
+                human_sleep(3.0, 5.0)
+                self.save_session_to_disk_and_redis(context)
+
+                logger.info("Connection invite successfully sent to %s!", profile_url)
+                return {
+                    "status": "INVITED",
+                    "profile_url": profile_url,
+                    "with_note": bool(note_text),
+                    "sent_at": datetime.now().isoformat(),
+                }
+
+            except Exception as e:
+                logger.error("Failed to send connection invite to %s: %s", profile_url, e, exc_info=True)
+                return {"status": "FAILED", "profile_url": profile_url, "error": str(e)}
             finally:
                 context.close()
                 if browser:

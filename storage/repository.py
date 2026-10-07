@@ -155,9 +155,25 @@ class PipelineRepository:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
 
+                CREATE TABLE IF NOT EXISTS linkedin_autopilot_prospects (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    nome TEXT NOT NULL,
+                    headline TEXT,
+                    profile_url TEXT UNIQUE NOT NULL,
+                    source_target_nome TEXT,
+                    source_post_url TEXT,
+                    nicho TEXT,
+                    status TEXT NOT NULL DEFAULT 'DISCOVERED',
+                    invite_note TEXT,
+                    invited_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_linkedin_targets_ativo ON linkedin_growth_targets(ativo);
                 CREATE INDEX IF NOT EXISTS idx_linkedin_comments_status ON linkedin_growth_comments(status);
                 CREATE INDEX IF NOT EXISTS idx_linkedin_style_memory_nicho ON linkedin_style_memory(nicho);
+                CREATE INDEX IF NOT EXISTS idx_autopilot_prospects_status ON linkedin_autopilot_prospects(status);
+                CREATE INDEX IF NOT EXISTS idx_autopilot_prospects_url ON linkedin_autopilot_prospects(profile_url);
             """)
             conn.commit()
             self._backfill_editorial_publications(conn)
@@ -1037,6 +1053,109 @@ class PipelineRepository:
                 "published_comments": (row_comments["published"] if row_comments else 0) or 0,
                 "liked_comments": (row_comments["liked"] if row_comments else 0) or 0,
             }
+
+    # ─── LinkedIn Connection Autopilot ──────────────────────────────────────────
+
+    def save_autopilot_prospect(
+        self,
+        nome: str,
+        headline: Optional[str],
+        profile_url: str,
+        source_target_nome: Optional[str] = None,
+        source_post_url: Optional[str] = None,
+        nicho: Optional[str] = None,
+    ) -> Optional[int]:
+        """Saves a discovered prospect to autopilot queue if not already present."""
+        clean_url = profile_url.split("?")[0].rstrip("/")
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT OR IGNORE INTO linkedin_autopilot_prospects 
+                (nome, headline, profile_url, source_target_nome, source_post_url, nicho, status)
+                VALUES (?, ?, ?, ?, ?, ?, 'DISCOVERED')
+                """,
+                (nome.strip(), (headline or "").strip(), clean_url, source_target_nome, source_post_url, nicho),
+            )
+            conn.commit()
+            return cursor.lastrowid if cursor.rowcount > 0 else None
+
+    def get_pending_autopilot_prospects(self, limit: int = 5) -> List[Dict[str, Any]]:
+        """Retrieves discovered prospects ready to receive connection invites."""
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT * FROM linkedin_autopilot_prospects
+                WHERE status = 'DISCOVERED'
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_daily_autopilot_invites_count(self) -> int:
+        """Returns the number of connection invites sent today."""
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT COUNT(*) FROM linkedin_autopilot_prospects
+                WHERE status = 'INVITED' AND date(invited_at) = date('now')
+                """
+            )
+            return cursor.fetchone()[0]
+
+    def update_autopilot_prospect_status(
+        self,
+        prospect_id: int,
+        status: str,
+        invite_note: Optional[str] = None,
+    ) -> bool:
+        """Updates prospect status (e.g. INVITED, ALREADY_CONNECTED, FAILED, SKIPPED)."""
+        with self._get_connection() as conn:
+            if status.upper() == "INVITED":
+                cursor = conn.execute(
+                    """
+                    UPDATE linkedin_autopilot_prospects
+                    SET status = ?, invite_note = ?, invited_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (status.upper(), invite_note, prospect_id),
+                )
+            else:
+                cursor = conn.execute(
+                    "UPDATE linkedin_autopilot_prospects SET status = ? WHERE id = ?",
+                    (status.upper(), prospect_id),
+                )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def get_autopilot_stats(self) -> Dict[str, Any]:
+        """Returns overall metrics for connection autopilot."""
+        with self._get_connection() as conn:
+            total = conn.execute("SELECT COUNT(*) FROM linkedin_autopilot_prospects").fetchone()[0]
+            invited = conn.execute("SELECT COUNT(*) FROM linkedin_autopilot_prospects WHERE status = 'INVITED'").fetchone()[0]
+            pending = conn.execute("SELECT COUNT(*) FROM linkedin_autopilot_prospects WHERE status = 'DISCOVERED'").fetchone()[0]
+            today_invited = self.get_daily_autopilot_invites_count()
+            return {
+                "total_discovered": total,
+                "total_invited": invited,
+                "pending_queue": pending,
+                "today_invited": today_invited,
+            }
+
+    def get_all_autopilot_prospects(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Retrieves most recent autopilot prospects."""
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT * FROM linkedin_autopilot_prospects
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
 
 
 repo = PipelineRepository()

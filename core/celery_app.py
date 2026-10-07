@@ -69,6 +69,8 @@ celery_app.conf.update(
         "flows.flow_company_enrichment.task_extract_linkedin_company": {"queue": "flows"},
         "flows.flow_linkedin_growth.task_linkedin_sniper_radar": {"queue": "flows"},
         "flows.flow_linkedin_growth.task_publish_approved_linkedin_comment": {"queue": "scraping"},
+        "flows.flow_linkedin_autopilot.task_linkedin_autopilot_discovery": {"queue": "scraping"},
+        "flows.flow_linkedin_autopilot.task_linkedin_autopilot_inviter": {"queue": "scraping"},
     },
 
     # Beat Periodic Schedules (Automations replacing n8n scheduled triggers)
@@ -77,6 +79,16 @@ celery_app.conf.update(
             "task": "flows.flow_linkedin_growth.task_linkedin_sniper_radar",
             "schedule": crontab(minute="*/45", hour="6-22"),  # Every 45m from 06:00 to 22:59
             "options": {"queue": "flows"},
+        },
+        "linkedin-autopilot-discovery-periodic": {
+            "task": "flows.flow_linkedin_autopilot.task_linkedin_autopilot_discovery",
+            "schedule": crontab(hour="8,13", minute=30),  # Twice daily at 08:30 and 13:30 BRT
+            "options": {"queue": "scraping"},
+        },
+        "linkedin-autopilot-inviter-periodic": {
+            "task": "flows.flow_linkedin_autopilot.task_linkedin_autopilot_inviter",
+            "schedule": crontab(hour="9,14,18", minute=15),  # 3x daily at 09:15, 14:15, 18:15 BRT
+            "options": {"queue": "scraping"},
         },
         "check-links-nt-periodic": {
             "task": "flows.flow_link_monitor.task_check_network_links",
@@ -133,6 +145,7 @@ celery_app.conf.update(
         "flows.flow_content_publisher",
         "flows.flow_company_enrichment",
         "flows.flow_linkedin_growth",
+        "flows.flow_linkedin_autopilot",
     ],
 )
 
