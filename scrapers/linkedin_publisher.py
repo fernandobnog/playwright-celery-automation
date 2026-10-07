@@ -1286,32 +1286,73 @@ class LinkedInPublisher:
 
                 logger.info("Opening post URL for like: %s", post_url)
                 page.goto(post_url, wait_until="domcontentloaded", timeout=30000)
-                human_sleep(2.0, 3.5)
+                human_sleep(2.5, 4.0)
 
+                # Wait for post container
                 try:
-                    human_scroll(page, steps=random.randint(1, 2), min_distance=100, max_distance=250)
+                    page.wait_for_selector(
+                        "div.feed-shared-update-v2, article, main, div.core-rail, div[data-fie-id]",
+                        timeout=15000,
+                    )
                 except Exception:
                     pass
 
-                # Locate like / reaction button
+                # Locate like / reaction button with progressive scroll (posts can have tall images or long text)
                 like_selectors = [
+                    # Modern LinkedIn pt-BR & en reaction button
+                    "button[aria-label*='botão de reação' i]",
+                    "button[aria-label*='reaction button' i]",
+                    "button:has(svg[id*='thumbs-up'])",
+                    "button:has(svg[id*='like'])",
+                    # Classic / feed post action bar selectors
                     "button.react-button__trigger",
-                    "button[aria-label*='Gostei' i]",
                     "button[aria-label*='Reagir com Gostei' i]",
+                    "button[aria-label*='Gostei' i]",
+                    "button[aria-label*='Curtir' i]",
                     "button[aria-label*='Like' i]",
-                    "button:has-text('Gostei')",
-                    "button:has-text('Like')",
+                    "div.feed-shared-social-action-bar button:has-text('Gostei')",
+                    "div.feed-shared-social-action-bar button:has-text('Curtir')",
+                    "div.feed-shared-social-action-bar button:has-text('Like')",
                     "span.reactions-react-button button",
+                    "button:has-text('Gostei')",
+                    "button:has-text('Curtir')",
+                    "button:has-text('Like')",
                 ]
 
                 like_btn = None
-                for sel in like_selectors:
-                    loc = page.locator(sel).first
-                    if loc.count() > 0 and loc.is_visible():
-                        like_btn = loc
+                for _attempt in range(5):
+                    for sel in like_selectors:
+                        candidates = page.locator(sel)
+                        cnt = candidates.count()
+                        if cnt > 0:
+                            for idx in range(cnt):
+                                cand = candidates.nth(idx)
+                                try:
+                                    if cand.evaluate("el => !!el.closest('#msg-overlay')"):
+                                        continue
+                                except Exception:
+                                    pass
+                                like_btn = cand
+                                break
+                        if like_btn:
+                            break
+                    if like_btn:
                         break
+                    # Scroll down progressively to trigger lazy hydration
+                    try:
+                        page.mouse.wheel(0, 500)
+                        human_sleep(1.0, 1.5)
+                    except Exception:
+                        pass
 
-                if not like_btn:
+                if like_btn:
+                    try:
+                        like_btn.scroll_into_view_if_needed(timeout=5000)
+                        human_sleep(0.8, 1.5)
+                    except Exception as err_scroll:
+                        logger.debug("scroll_into_view_if_needed warning: %s", err_scroll)
+
+                if not like_btn or not like_btn.is_visible():
                     shot_err = str(settings.downloads_path / f"like_not_found_{int(time.time())}.png")
                     page.screenshot(path=shot_err)
                     raise RuntimeError(f"Like button not found on {post_url}. Screenshot saved: {shot_err}")
@@ -1322,12 +1363,21 @@ class LinkedInPublisher:
                 btn_label = (like_btn.get_attribute("aria-label") or "").lower()
                 btn_text = (like_btn.inner_text() or "").lower()
 
-                if (
+                is_already_liked = False
+                if "botão de reação" in btn_label or "reaction button" in btn_label:
+                    # In pt-BR: "Situação do botão de reação: nenhuma reação" vs "Situação do botão de reação: Gostei"
+                    # In en: "Reaction button state: no reaction" vs "Reaction button state: Like"
+                    if not any(k in btn_label for k in ["nenhuma", "sem reação", "no reaction"]):
+                        is_already_liked = True
+                elif (
                     aria_pressed == "true"
                     or "react-button--active" in btn_class
                     or "desfazer" in btn_label
                     or "desfazer" in btn_text
                 ):
+                    is_already_liked = True
+
+                if is_already_liked:
                     logger.info("Post %s is already liked. Skipping click.", post_url)
                     return {
                         "status": "ALREADY_LIKED",
@@ -1335,7 +1385,7 @@ class LinkedInPublisher:
                         "liked_at": datetime.now().isoformat(),
                     }
 
-                logger.info("Clicking like button...")
+                logger.info("Clicking like button on %s...", post_url)
                 human_click(page, like_btn)
                 human_sleep(2.0, 3.5)
 

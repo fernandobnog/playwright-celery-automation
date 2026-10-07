@@ -1817,8 +1817,8 @@ async def like_linkedin_post_from_token(token: str = Query(..., description="Act
             </div></body></html>""",
         )
 
+    repo.update_linkedin_growth_comment_status(comment_id, "LIKING")
     async_task = task_like_approved_linkedin_post.delay(comment_id)
-    repo.update_linkedin_growth_comment_status(comment_id, "LIKED")
 
     return HTMLResponse(
         content=f"""<!DOCTYPE html>
@@ -1996,8 +1996,8 @@ async def direct_like_linkedin_post(comment_id: int):
     if not comment:
         raise HTTPException(status_code=404, detail="Comentário não encontrado.")
 
+    repo.update_linkedin_growth_comment_status(comment_id, "LIKING")
     async_task = task_like_approved_linkedin_post.delay(comment_id)
-    repo.update_linkedin_growth_comment_status(comment_id, "LIKED")
     return {
         "status": "SUCCESS",
         "task_id": async_task.id,

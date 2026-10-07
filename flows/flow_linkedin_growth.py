@@ -493,38 +493,52 @@ def task_like_approved_linkedin_post(self, comment_id: int) -> Dict[str, Any]:
     if not comment:
         raise ValueError(f"Comment record #{comment_id} not found in database.")
 
-    if comment["status"] in ("LIKED", "PUBLISHED"):
-        logger.info("Comment record #%d already has status %s. Skipping like.", comment_id, comment.get("status"))
-        return {"status": "ALREADY_PROCESSED", "comment_id": comment_id}
-
     post_url = comment["post_url"]
     target_nome = comment["target_nome"]
 
-    # Execute like reaction
-    like_res = linkedin_publisher.like_post(post_url=post_url)
+    try:
+        # Execute like reaction via Playwright
+        like_res = linkedin_publisher.like_post(post_url=post_url)
 
-    # Mark as LIKED in repository
-    repo.update_linkedin_growth_comment_status(comment_id=comment_id, status="LIKED")
+        # Mark as LIKED in repository only upon successful verification
+        repo.update_linkedin_growth_comment_status(comment_id=comment_id, status="LIKED")
 
-    whatsapp_recipient = getattr(settings, "EDITORIAL_WHATSAPP_RECIPIENT", None) or getattr(settings, "NOTIFICATION_PHONE", None)
-    if whatsapp_recipient:
+        whatsapp_recipient = getattr(settings, "EDITORIAL_WHATSAPP_RECIPIENT", None) or getattr(settings, "NOTIFICATION_PHONE", None)
+        if whatsapp_recipient:
+            try:
+                ev = EvolutionClient()
+                confirm_msg = (
+                    f"👍 *POST CURTIDO NO LINKEDIN COM SUCESSO!*\n\n"
+                    f"👤 *Autor:* {target_nome}\n"
+                    f"🔗 *Post:* {post_url}\n"
+                    f"⚡ Publicação marcada como curtida pelo Playwright."
+                )
+                ev.send_message(whatsapp_recipient, confirm_msg)
+            except Exception as e:
+                logger.warning("Could not send WhatsApp like confirmation: %s", e)
+
+        return {
+            "status": "LIKED",
+            "comment_id": comment_id,
+            "target": target_nome,
+            "post_url": post_url,
+            "details": like_res,
+        }
+    except Exception as exc:
+        logger.error("Failed to like LinkedIn post %s for comment #%d: %s", post_url, comment_id, exc)
+        repo.update_linkedin_growth_comment_status(comment_id=comment_id, status="FAILED_LIKE")
         try:
-            ev = EvolutionClient()
-            confirm_msg = (
-                f"👍 *POST CURTIDO NO LINKEDIN COM SUCESSO!*\n\n"
-                f"👤 *Autor:* {target_nome}\n"
-                f"🔗 *Post:* {post_url}\n"
-                f"⚡ Publicação marcada como curtida pelo Playwright."
-            )
-            ev.send_message(whatsapp_recipient, confirm_msg)
-        except Exception as e:
-            logger.warning("Could not send WhatsApp like confirmation: %s", e)
-
-    return {
-        "status": "LIKED",
-        "comment_id": comment_id,
-        "target": target_nome,
-        "post_url": post_url,
-        "details": like_res,
-    }
+            whatsapp_recipient = getattr(settings, "EDITORIAL_WHATSAPP_RECIPIENT", None) or getattr(settings, "NOTIFICATION_PHONE", None)
+            if whatsapp_recipient:
+                ev = EvolutionClient()
+                err_msg = (
+                    f"⚠️ *FALHA AO CURTIR POST NO LINKEDIN*\n\n"
+                    f"👤 *Autor:* {target_nome}\n"
+                    f"🔗 *Post:* {post_url}\n"
+                    f"❌ *Erro:* {str(exc)[:250]}"
+                )
+                ev.send_message(whatsapp_recipient, err_msg)
+        except Exception:
+            pass
+        raise exc
 
