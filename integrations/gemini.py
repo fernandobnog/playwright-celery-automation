@@ -111,13 +111,13 @@ class GeminiClient:
         )
 
         models_to_try = [model_name]
-        for fallback in ["gemini-2.0-flash", "gemini-1.5-flash"]:
+        for fallback in ["gemini-3.5-flash", "gemini-2.5-flash", "gemini-3.5-flash-lite"]:
             if fallback not in models_to_try:
                 models_to_try.append(fallback)
 
         last_error = None
         for current_model in models_to_try:
-            for attempt in range(2):
+            for attempt in range(3):
                 try:
                     response = self.client.models.generate_content(
                         model=current_model,
@@ -130,12 +130,21 @@ class GeminiClient:
                 except Exception as e:
                     last_error = e
                     err_str = str(e).upper()
-                    logger.warning("Gemini model %s attempt %d failed: %s. Trying next...", current_model, attempt + 1, e)
-                    # If model is overloaded, rate-limited (429), quota exhausted or unavailable, immediately try next fallback model
-                    if any(tok in err_str for tok in ["503", "UNAVAILABLE", "HIGH DEMAND", "429", "RESOURCE_EXHAUSTED", "QUOTA", "RATE_LIMIT"]):
+                    logger.warning(
+                        "Gemini model %s attempt %d failed: %s.",
+                        current_model,
+                        attempt + 1,
+                        e,
+                    )
+                    # If model is discontinued or not found (404), skip immediately to next model
+                    if any(tok in err_str for tok in ["404", "NOT_FOUND", "NO LONGER AVAILABLE"]):
                         break
+                    # If quota is exhausted (429 RESOURCE_EXHAUSTED), skip immediately to next model
+                    if any(tok in err_str for tok in ["RESOURCE_EXHAUSTED", "QUOTA"]):
+                        break
+                    # For transient spikes (503, UNAVAILABLE, HIGH DEMAND, RATE_LIMIT), retry on the same model with backoff
                     import time
-                    time.sleep(1)
+                    time.sleep(2 * (attempt + 1))
 
         if last_error:
             raise last_error

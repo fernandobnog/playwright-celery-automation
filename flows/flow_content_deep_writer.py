@@ -1115,6 +1115,10 @@ def generate_deep_content_and_deliver(
 
 @celery_app.task(
     name="flows.flow_content_deep_writer.task_deep_content_generation",
+    autoretry_for=(Exception,),
+    retry_backoff=60,
+    retry_kwargs={"max_retries": 3},
+    retry_jitter=True,
     time_limit=1800,
     soft_time_limit=1700,
 )
