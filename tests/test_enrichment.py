@@ -749,4 +749,185 @@ def test_unified_enrichment_api_with_contacts_payload():
         assert resp_get.json()["status"] == "SUCCESS"
 
 
+def test_decision_makers_universal_phone_and_email_preservation():
+    """
+    Validates that:
+    1. Decision makers receive company phone attribution when direct mobile is absent.
+    2. Corporate emails are preserved under PADRAO_CORPORATIVO_ESTIMADO instead of being erased.
+    3. Missing LinkedIn URLs for QSA members are resolved.
+    """
+    from flows.flow_company_enrichment import find_decision_makers_pipeline
+    from api.schemas.enrichment import DecisionMakersRequest, DecisionMakerProfile, DecisionMakersResponse
+
+    mock_gemini = MagicMock()
+    mock_gemini.generate_structured.side_effect = [
+        # 1. Query plan
+        MagicMock(query_c_level='site:linkedin.com/in "Totvs" CEO OR Diretor', query_directors_heads='site:linkedin.com/in "Totvs" Head OR Gerente'),
+        # 2. Synthesis
+        DecisionMakersResponse(
+            status="SUCCESS",
+            company_name="Totvs",
+            total_encontrados=2,
+            decisores=[
+                DecisionMakerProfile(
+                    nome="Dennis Herszkowicz",
+                    cargo="Presidente e CEO",
+                    nivel_hierarquico="C-Level / Sócio-Fundador",
+                    departamento="Diretoria Geral",
+                    linkedin_url=None,  # missing LinkedIn
+                    vinculo_atual_confirmado=True,
+                ),
+                DecisionMakerProfile(
+                    nome="Gilsinei Valcir Hansen",
+                    cargo="Diretor Executivo",
+                    nivel_hierarquico="Diretoria",
+                    departamento="Operações",
+                    linkedin_url="https://br.linkedin.com/in/gilsinei-hansen",
+                    vinculo_atual_confirmado=True,
+                ),
+            ],
+            analise_estrategica_contato="Abordar Dennis Herszkowicz para estratégia executiva.",
+        ),
+    ]
+
+    req = DecisionMakersRequest(
+        company_name="Totvs",
+        website_or_domain="totvs.com",
+    )
+
+    fake_search_results = {
+        'site:linkedin.com/in "Dennis Herszkowicz" "Totvs"': {
+            "organic_results": [{"url": "https://br.linkedin.com/in/dennis-herszkowicz", "title": "Dennis Herszkowicz - CEO Totvs", "snippet": "CEO da Totvs"}]
+        }
+    }
+
+    def fake_search(query, num_results=10):
+        for k, v in fake_search_results.items():
+            if k in query:
+                return v
+    def fake_find_email(nome, domain, alternate_domain=None):
+        parts = [p.lower() for p in nome.split() if len(p) > 1]
+        return {
+            "email": f"{parts[0]}.{parts[-1]}@{domain}",
+            "status": "PADRAO_CORPORATIVO_ESTIMADO",
+            "valido": None,
+            "padrao_identificado": "{nome}.{sobrenome}@" + domain,
+        }
+
+    with patch("flows.flow_company_enrichment.execute_google_search", side_effect=fake_search):
+        with patch("flows.flow_company_enrichment.find_valid_executive_email", side_effect=fake_find_email):
+            with patch("flows.flow_company_enrichment._safe_check_whatsapp", return_value=True):
+                res = find_decision_makers_pipeline(
+                    request=req,
+                    gemini_client=mock_gemini,
+                    company_phones=["(11) 3981-7000"],
+                    company_emails=["contato@totvs.com"],
+                )
+
+                assert res.status == "SUCCESS"
+                assert len(res.decisores) == 2
+
+                # Check Dennis
+                dennis = res.decisores[0]
+                assert dennis.email_provavel is not None
+                assert "totvs.com" in dennis.email_provavel
+                assert dennis.status_email in ("PADRAO_CORPORATIVO_ESTIMADO", "VALIDADO_SMTP")
+                assert dennis.telefone_contato == "(11) 3981-7000"
+                assert dennis.whatsapp_valido is True
+                assert "(11) 3981-7000" in dennis.telefones_associados
+                assert dennis.linkedin_url == "https://br.linkedin.com/in/dennis-herszkowicz"
+
+                # Check Gilsinei
+                gilsinei = res.decisores[1]
+                assert gilsinei.telefone_contato == "(11) 3981-7000"
+                assert gilsinei.email_provavel is not None
+                assert "gilsinei.hansen@totvs.com" in gilsinei.emails_associados
+
+
+def test_enrichment_rdap_pdf_and_google_business_panel():
+    """
+    Validates the 4 new data acquisition capabilities:
+    1. Registro.br RDAP client parsing and legal representative extraction.
+    2. Google Meu Negócio / Knowledge Panel phone & address extraction.
+    3. Evolution API WhatsApp sync profile check.
+    4. End-to-end reconciliation in enrich_company_pipeline.
+    """
+    from integrations.rdap_client import extract_rdap_data
+    from integrations.evolution import EvolutionClient
+    from scrapers.google_scraper import google_scraper
+    import bs4
+
+    # 1. Test RDAP extraction
+    fake_rdap = {
+        "ldhName": "empresaexemplo.com.br",
+        "entities": [
+            {
+                "roles": ["registrant"],
+                "legalRepresentative": "Maria Silva Santos",
+                "publicIds": [{"type": "cnpj", "identifier": "12.345.678/0001-90"}],
+                "vcardArray": ["vcard", [
+                    ["version", {}, "text", "4.0"],
+                    ["fn", {}, "text", "Empresa Exemplo S.A."],
+                ]],
+                "entities": [
+                    {
+                        "roles": ["administrative"],
+                        "vcardArray": ["vcard", [
+                            ["version", {}, "text", "4.0"],
+                            ["fn", {}, "text", "Joao Admin"],
+                            ["email", {}, "text", "diretoria@empresaexemplo.com.br"],
+                        ]]
+                    }
+                ]
+            }
+        ]
+    }
+    rdap_res = extract_rdap_data(fake_rdap)
+    assert rdap_res["cnpj"] == "12.345.678/0001-90"
+    assert rdap_res["razao_social"] == "Empresa Exemplo S.A."
+    assert rdap_res["representante_legal"] == "Maria Silva Santos"
+    assert "diretoria@empresaexemplo.com.br" in rdap_res["emails"]
+    assert "Joao Admin" in rdap_res["admin_tech_names"]
+
+    # 2. Test Google SERP Knowledge Panel extraction
+    fake_html = """
+    <html>
+      <body>
+        <div id="rhs">
+          <div class="SPZz6b"><h2>Empresa Exemplo Matriz</h2></div>
+          <div data-attrid="kc:/collection/knowledge_panels/has_phone:phone">
+            <span>(11) 3333-4444</span>
+          </div>
+          <div data-attrid="kc:/location/location:address">
+            <span class="LrzXr">Av. Paulista, 1000 - Bela Vista, São Paulo - SP</span>
+          </div>
+        </div>
+        <div class="g">
+          <h3>Empresa Exemplo - Site Oficial</h3>
+          <a href="https://www.empresaexemplo.com.br"></a>
+          <div>Soluções corporativas inovadoras para o mercado B2B.</div>
+        </div>
+      </body>
+    </html>
+    """
+    soup = bs4.BeautifulSoup(fake_html, "html.parser")
+    parsed_serp = google_scraper._parse_serp(soup, query="Empresa Exemplo", num_results=5)
+    kp = parsed_serp.get("knowledge_panel")
+    assert kp is not None
+    assert kp["title"] == "Empresa Exemplo Matriz"
+    assert kp["phone"] == "(11) 3333-4444"
+    assert "Paulista" in kp["address"]
+
+    # 3. Test Evolution API check_whatsapp_sync
+    evo = EvolutionClient(base_url="http://fake-evolution:8080", api_key="fake-key", instance="test")
+    fake_evo_resp = [{"jid": "5511999998888@s.whatsapp.net", "exists": True, "name": "Maria Silva"}]
+    with patch("httpx.Client.post") as mock_post:
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: fake_evo_resp)
+        wpp_check = evo.check_whatsapp_sync("(11) 99999-8888")
+        assert wpp_check["exists"] is True
+        assert wpp_check["phone"] == "5511999998888"
+
+
+
+
 

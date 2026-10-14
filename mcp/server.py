@@ -82,6 +82,22 @@ TOOLS = [
                     "description": "Se true, faz scraping aprofundado do site oficial para extrair produtos e serviços reais",
                     "default": True,
                 },
+                "people": {
+                    "type": "string",
+                    "description": "Nomes de executivos ou tomadores de decisão alvo a auditar/enriquecer (separados por vírgula)",
+                },
+                "emails": {
+                    "type": "string",
+                    "description": "E-mails corporativos conhecidos para validação e identificação de padrão corporativo (separados por vírgula)",
+                },
+                "phones": {
+                    "type": "string",
+                    "description": "Telefones de contato ou WhatsApp para validação (separados por vírgula)",
+                },
+                "contacts": {
+                    "type": "string",
+                    "description": "Pessoas, e-mails ou telefones em formato livre",
+                },
             },
             "required": ["name"],
         },
@@ -108,6 +124,18 @@ TOOLS = [
                     "type": "integer",
                     "description": "Quantidade máxima de perfis a retornar (padrão: 10, máx: 25)",
                     "default": 10,
+                },
+                "people": {
+                    "type": "string",
+                    "description": "Nomes específicos de executivos ou sócios a auditar (separados por vírgula)",
+                },
+                "emails": {
+                    "type": "string",
+                    "description": "E-mails corporativos conhecidos para matching e auditoria (separados por vírgula)",
+                },
+                "phones": {
+                    "type": "string",
+                    "description": "Telefones conhecidos para associação e validação (separados por vírgula)",
                 },
             },
             "required": ["company_name"],
@@ -281,6 +309,10 @@ def handle_tools_call(req_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 "name": company_name,
                 "location": args.get("location"),
                 "deep_scrape": args.get("deep_scrape", True),
+                "people": args.get("people"),
+                "emails": args.get("emails"),
+                "phones": args.get("phones"),
+                "contacts": args.get("contacts"),
             }
             res = _http_request("/api/v1/enrich", method="POST", data=payload, timeout=240)
 
@@ -292,6 +324,9 @@ def handle_tools_call(req_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 "company_name": company_name,
                 "website_or_domain": args.get("website_or_domain"),
                 "max_results": args.get("max_results", 10),
+                "people": args.get("people") or args.get("target_people"),
+                "emails": args.get("emails") or args.get("provided_emails"),
+                "phones": args.get("phones") or args.get("provided_phones"),
             }
             res = _http_request("/api/v1/enrich/decision-makers", method="POST", data=payload, timeout=180)
 

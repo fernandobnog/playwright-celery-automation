@@ -86,8 +86,16 @@ class GoogleSearchScraper(BasePlaywrightScraper):
     def _search_duckduckgo_fallback(self, page: Page, query: str, num_results: int) -> Dict[str, Any]:
         """Fallback to DuckDuckGo SERP when Google is blocked by bot detection."""
         try:
-            # DuckDuckGo handles queries better without complex boolean operators or excessive quotes
-            clean_query = re.sub(r'["()]+', ' ', query)
+            # DuckDuckGo handles queries better with simplified site operators and clean keywords
+            clean_query = query
+            # Consolidate multiple LinkedIn site operators into a single root site operator
+            if "linkedin.com/in" in clean_query:
+                clean_query = re.sub(r'\(?site:[a-z.]*linkedin\.com/in/?(?:\s+OR\s+site:[a-z.]*linkedin\.com/in/?)*\)?', 'site:linkedin.com/in', clean_query, flags=re.I)
+            elif "linkedin.com/company" in clean_query:
+                clean_query = re.sub(r'\(?site:[a-z.]*linkedin\.com/company/?(?:\s+OR\s+site:[a-z.]*linkedin\.com/company/?)*\)?', 'site:linkedin.com/company', clean_query, flags=re.I)
+            
+            # Remove parenthesis and excessive ORs
+            clean_query = re.sub(r'[()]+', ' ', clean_query)
             clean_query = re.sub(r'\bOR\b', ' ', clean_query)
             clean_query = re.sub(r'\s+', ' ', clean_query).strip()
 
@@ -151,6 +159,7 @@ class GoogleSearchScraper(BasePlaywrightScraper):
                 "people_also_ask": [],
                 "related_searches": [],
                 "ai_overview": None,
+                "knowledge_panel": None,
             }
         except Exception as e_ddg:
             logger.warning("DuckDuckGo fallback search failed for '%s': %s", query[:40], e_ddg)
@@ -293,6 +302,44 @@ class GoogleSearchScraper(BasePlaywrightScraper):
             if ai_text and len(ai_text) > 40:
                 ai_overview = ai_text[:500]
 
+        # Knowledge Graph / Local Business Panel (Google Meu Negócio & Google Places)
+        knowledge_panel = None
+        kp_box = soup.select_one("div[data-attrid^='kc:'], div.kp-header, div.SPZz6b, div.I6TXqe, div#rhs")
+        if kp_box or soup.select_one("div[data-attrid*='phone'], div[data-attrid*='address'], span.LrzXr"):
+            kp_title = None
+            title_el = soup.select_one("div.SPZz6b h2, div.kp-header h2, div.qrShPb")
+            if title_el:
+                kp_title = title_el.get_text().strip()
+
+            kp_phone = None
+            phone_el = soup.select_one("div[data-attrid*='phone'] span, span[data-dtype='d3ph'], span.LrzXr.zdqRbf, a[data-dtype='d3ph'], a[href^='tel:']")
+            if phone_el:
+                kp_phone = phone_el.get_text().strip()
+            else:
+                rhs = soup.select_one("div#rhs, div.rhs")
+                if rhs:
+                    m_ph = re.search(r'\(?\d{2}\)?\s*(?:9\s*)?\d{4}[-\s]\d{4}', rhs.get_text())
+                    if m_ph:
+                        kp_phone = m_ph.group(0)
+
+            kp_address = None
+            addr_el = soup.select_one("div[data-attrid*='address'] span.LrzXr, div[data-attrid*='address'], span.LrzXr")
+            if addr_el:
+                kp_address = addr_el.get_text().strip()
+
+            kp_website = None
+            site_el = soup.select_one("a.ab_button[href^='http'], div.b11SLb a")
+            if site_el:
+                kp_website = site_el.get("href")
+
+            if kp_phone or kp_address or kp_title:
+                knowledge_panel = {
+                    "title": kp_title,
+                    "phone": kp_phone,
+                    "address": kp_address,
+                    "website": kp_website,
+                }
+
         return {
             "query": query,
             "total_results": len(organic_results),
@@ -300,6 +347,7 @@ class GoogleSearchScraper(BasePlaywrightScraper):
             "people_also_ask": people_also_ask[:8],
             "related_searches": related_searches[:10],
             "ai_overview": ai_overview,
+            "knowledge_panel": knowledge_panel,
         }
 
     def _resolve_target_url(self, href: str, client: httpx.Client) -> str:

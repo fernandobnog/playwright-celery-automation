@@ -79,6 +79,7 @@ class CadastralData(BaseModel):
     data_abertura: Optional[str] = Field(default=None, description="Ano ou data de fundação/abertura se mencionada")
     sede_localizacao: Optional[str] = Field(default=None, description="Cidade, Estado ou endereço da matriz")
     qsa: List[Dict[str, Any]] = Field(default_factory=list, description="Quadro de Sócios e Administradores (QSA)")
+    representante_legal: Optional[str] = Field(default=None, description="Representante legal registrado no domínio ou órgãos públicos")
 
 
 class DigitalPresence(BaseModel):
@@ -88,6 +89,8 @@ class DigitalPresence(BaseModel):
     telefones: List[str] = Field(default_factory=list, description="Telefones institucionais ou de atendimento")
     emails: List[str] = Field(default_factory=list, description="E-mails corporativos (contato, comercial, etc.)")
     outras_redes: List[str] = Field(default_factory=list, description="Outros links (Instagram, YouTube, etc.)")
+    whatsapp_comercial: Optional[str] = Field(default=None, description="Número de WhatsApp verificado para contato comercial")
+    dados_registro_br: Optional[Dict[str, Any]] = Field(default=None, description="Dados do domínio no Registro.br / RDAP")
 
 
 class MarketProfile(BaseModel):
@@ -513,6 +516,9 @@ class GoogleEnrichmentData(BaseModel):
     website_oficial: Optional[str] = None
     telefones: List[str] = Field(default_factory=list)
     emails: List[str] = Field(default_factory=list)
+    whatsapp_comercial: Optional[str] = None
+    representante_legal: Optional[str] = None
+    dados_registro_br: Optional[Dict[str, Any]] = None
     setor: str
     nicho: Optional[str] = None
     porte_estimado: str

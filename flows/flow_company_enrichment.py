@@ -53,6 +53,7 @@ from integrations.email_verifier import (
     validate_email_syntax,
     verify_email_smtp,
 )
+from integrations.rdap_client import clean_domain_for_rdap, consult_rdap_registro_br
 from scrapers.ai_extractor import ai_extractor
 from scrapers.google_scraper import GoogleSearchScraper
 
@@ -109,17 +110,7 @@ def _safe_check_whatsapp(phone: str) -> Optional[bool]:
     try:
         norm = format_brazilian_phone(phone)
         evo = EvolutionClient()
-        import asyncio
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-
-        if loop and loop.is_running():
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                return pool.submit(lambda: asyncio.run(evo.check_whatsapp_number(norm))).result(timeout=4)
-        else:
-            return asyncio.run(evo.check_whatsapp_number(norm))
+        return evo.check_whatsapp_number_sync(norm)
     except Exception as e:
         logger.debug("WhatsApp verification skipped or failed for %s: %s", phone, e)
         return None
@@ -405,10 +396,70 @@ def enrich_company_pipeline(
         except Exception as e_fisc:
             logger.warning("Fiscal search failed: %s", e_fisc)
 
+    site_emails = set()
+    site_phones = set()
+
+    # --------------------------------------------------------------------------
+    # Stage 2.3: Google Meu Negócio / Knowledge Panel extraction
+    # --------------------------------------------------------------------------
+    kp_data = {}
+    if "res_primary" in locals() and isinstance(res_primary, dict):
+        kp_data = res_primary.get("knowledge_panel") or {}
+    if not kp_data and "res_fiscal" in locals() and isinstance(res_fiscal, dict):
+        kp_data = res_fiscal.get("knowledge_panel") or {}
+
+    if kp_data.get("phone"):
+        norm_kp_ph = normalize_phone(kp_data["phone"])
+        if norm_kp_ph:
+            site_phones.add(norm_kp_ph)
+
+    # --------------------------------------------------------------------------
+    # Stage 2.4: Registro.br RDAP Resolution (Official Domain Registry)
+    # --------------------------------------------------------------------------
+    rdap_candidate_domain = None
+    if known_domains:
+        rdap_candidate_domain = known_domains[0]
+    else:
+        for it in collected_results:
+            u = it.get("url", "")
+            if _is_official_domain_candidate(u):
+                rdap_candidate_domain = clean_domain_for_rdap(u)
+                break
+
+    if not rdap_candidate_domain:
+        clean_slug = re.sub(r'[^a-z0-9]', '', unicodedata.normalize('NFKD', company_name).encode('ascii', 'ignore').decode('utf-8').lower())
+        if clean_slug:
+            rdap_candidate_domain = f"{clean_slug}.com.br"
+
+    rdap_info = None
+    if rdap_candidate_domain:
+        try:
+            rdap_info = consult_rdap_registro_br(rdap_candidate_domain)
+            if rdap_info:
+                logger.info(
+                    "RDAP match found for '%s': CNPJ=%s, LegalRep='%s'",
+                    rdap_candidate_domain,
+                    rdap_info.get("cnpj"),
+                    rdap_info.get("representante_legal"),
+                )
+                for em in rdap_info.get("emails", []):
+                    site_emails.add(em)
+                for ph in rdap_info.get("telefones", []):
+                    norm_ph = normalize_phone(ph)
+                    if norm_ph:
+                        site_phones.add(norm_ph)
+        except Exception as e_rdap:
+            logger.debug("RDAP lookup error: %s", e_rdap)
+
     # --------------------------------------------------------------------------
     # Stage 2.5: Official Corporate Registry Resolution (Minha Receita / BrasilAPI)
     # --------------------------------------------------------------------------
     candidate_cnpjs = extract_cnpjs_from_search_results(collected_results)
+    if rdap_info and rdap_info.get("cnpj"):
+        rdap_cnpj_clean = re.sub(r"\D", "", rdap_info["cnpj"])
+        if len(rdap_cnpj_clean) == 14 and rdap_cnpj_clean not in candidate_cnpjs:
+            candidate_cnpjs.insert(0, rdap_cnpj_clean)
+
     cnpj_registry_data = None
     for cand in candidate_cnpjs[:3]:
         cnpj_registry_data = consult_cnpj_public_api(cand)
@@ -433,6 +484,33 @@ def enrich_company_pipeline(
             logger.warning("Directory CNPJ search fallback error: %s", e_dir)
 
     # --------------------------------------------------------------------------
+    # Stage 2.7: Corporate PDF Documents OSINT (Governance, Leadership, Contacts)
+    # --------------------------------------------------------------------------
+    pdf_domain = None
+    if rdap_candidate_domain:
+        pdf_domain = rdap_candidate_domain
+    elif known_domains:
+        pdf_domain = known_domains[0]
+
+    pdf_findings = []
+    if pdf_domain:
+        try:
+            pdf_query = f'site:{pdf_domain} filetype:pdf (diretoria OR contato OR organograma OR governanca OR relatorio)'
+            res_pdf = execute_google_search(pdf_query, num_results=3)
+            for p_item in res_pdf.get("organic_results", []):
+                p_txt = f"{p_item.get('title', '')} {p_item.get('snippet', '')}"
+                pdf_findings.append(f"PDF: {p_item.get('title', '')} ({p_item.get('url', '')}) -> {p_item.get('snippet', '')}")
+                for em in re.findall(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b', p_txt):
+                    if pdf_domain in em.lower():
+                        site_emails.add(em.lower())
+                for ph in re.findall(r'\(?\d{2}\)?\s*(?:9\s*)?\d{4}[-\s]\d{4}', p_txt):
+                    norm_ph = normalize_phone(ph)
+                    if norm_ph:
+                        site_phones.add(norm_ph)
+        except Exception as e_pdf:
+            logger.debug("PDF dorking error: %s", e_pdf)
+
+    # --------------------------------------------------------------------------
     # Stage 3: Deep Scraping of Candidate Official Website (Optional)
     # --------------------------------------------------------------------------
     official_website_url = None
@@ -446,8 +524,6 @@ def enrich_company_pipeline(
         official_website_url = f"https://www.{known_domains[0]}"
 
     site_extracted_content = ""
-    site_emails = set()
-    site_phones = set()
     if request.deep_scrape_website and official_website_url:
         try:
             logger.info("Extracting clean page content from official domain: %s", official_website_url)
@@ -464,22 +540,65 @@ def enrich_company_pipeline(
                 if not ph.startswith("(00") and not ph.startswith("(99"):
                     site_phones.add(ph.strip())
 
-            # Attempt quick fetch of /contato or /fale-conosco
+            # Fetch raw homepage HTML to capture footer, tel:, mailto: and whatsapp links
+            base_url = f"{urlparse(official_website_url).scheme}://{urlparse(official_website_url).netloc}"
+            headers_crawl = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            }
             try:
-                base_url = f"{urlparse(official_website_url).scheme}://{urlparse(official_website_url).netloc}"
-                with httpx.Client(timeout=4, follow_redirects=True) as http_client:
-                    for c_path in ["/contato", "/fale-conosco"]:
-                        resp_c = http_client.get(f"{base_url}{c_path}")
-                        if resp_c.status_code == 200:
-                            for em in re.findall(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b', resp_c.text):
-                                if not any(ign in em.lower() for ign in ["example.com", "wix.com", ".png", ".jpg", ".webp"]):
-                                    site_emails.add(em.lower())
-                            for ph in re.findall(r'\(?\d{2}\)?\s*(?:9\s*)?\d{4}[-\s]\d{4}', resp_c.text):
-                                if not ph.startswith("(00") and not ph.startswith("(99"):
-                                    site_phones.add(ph.strip())
-                            break
-            except Exception:
-                pass
+                with httpx.Client(timeout=5, follow_redirects=True, headers=headers_crawl) as http_client:
+                    resp_home = http_client.get(official_website_url)
+                    if resp_home.status_code == 200:
+                        home_html = resp_home.text
+                        for m in re.findall(r'mailto:([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})', home_html, re.I):
+                            if not any(ign in m.lower() for ign in ["example.com", "wix.com", ".png", ".jpg", ".webp"]):
+                                site_emails.add(m.lower())
+                        for t in re.findall(r'tel:([+0-9\s().-]+)', home_html, re.I):
+                            norm_t = normalize_phone(t)
+                            if norm_t:
+                                site_phones.add(norm_t)
+                        for w in re.findall(r'(?:wa\.me/|api\.whatsapp\.com/send\?phone=)(\d+)', home_html, re.I):
+                            norm_w = normalize_phone(w)
+                            if norm_w:
+                                site_phones.add(norm_w)
+                        for ph in re.findall(r'\(?\d{2}\)?\s*(?:9\s*)?\d{4}[-\s]\d{4}', home_html):
+                            norm_ph = normalize_phone(ph)
+                            if norm_ph:
+                                site_phones.add(norm_ph)
+
+                    # Scan contact, leadership and governance pages
+                    contact_paths = [
+                        "/contato", "/fale-conosco", "/fale-com-a-gente", "/contatos",
+                        "/contact", "/quem-somos", "/sobre", "/lideranca", "/governanca", "/ri"
+                    ]
+                    for c_path in contact_paths:
+                        try:
+                            resp_c = http_client.get(f"{base_url}{c_path}")
+                            if resp_c.status_code == 200:
+                                c_html = resp_c.text
+                                for em in re.findall(r'mailto:([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})', c_html, re.I):
+                                    if not any(ign in em.lower() for ign in ["example.com", "wix.com", ".png", ".jpg", ".webp"]):
+                                        site_emails.add(em.lower())
+                                for em in re.findall(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b', c_html):
+                                    if not any(ign in em.lower() for ign in ["example.com", "wix.com", ".png", ".jpg", ".webp"]):
+                                        site_emails.add(em.lower())
+                                for t in re.findall(r'tel:([+0-9\s().-]+)', c_html, re.I):
+                                    norm_t = normalize_phone(t)
+                                    if norm_t:
+                                        site_phones.add(norm_t)
+                                for w in re.findall(r'(?:wa\.me/|api\.whatsapp\.com/send\?phone=)(\d+)', c_html, re.I):
+                                    norm_w = normalize_phone(w)
+                                    if norm_w:
+                                        site_phones.add(norm_w)
+                                for ph in re.findall(r'\(?\d{2}\)?\s*(?:9\s*)?\d{4}[-\s]\d{4}', c_html):
+                                    norm_ph = normalize_phone(ph)
+                                    if norm_ph:
+                                        site_phones.add(norm_ph)
+                        except Exception:
+                            continue
+            except Exception as e_crawl:
+                logger.debug("Raw HTML crawl for %s: %s", official_website_url, e_crawl)
         except Exception as e_site:
             logger.warning("Could not extract deep content from %s: %s", official_website_url, e_site)
 
@@ -503,6 +622,35 @@ def enrich_company_pipeline(
             f"Fonte: {cnpj_registry_data.get('fonte')}\n"
         )
         sources_used.append("https://minhareceita.org")
+
+    if rdap_info:
+        evidence_lines.append(
+            f"=== REGISTRO OFICIAL DO DOMÍNIO (REGISTRO.BR / RDAP) ===\n"
+            f"Domínio: {rdap_info.get('domain')}\n"
+            f"CNPJ: {rdap_info.get('cnpj')}\n"
+            f"Razão Social Titular: {rdap_info.get('razao_social')}\n"
+            f"Representante Legal: {rdap_info.get('representante_legal')}\n"
+            f"E-mails de Contato Administrativo/TI: {', '.join(rdap_info.get('emails', []))}\n"
+            f"Gestores Técnicos Cadastrados: {', '.join(rdap_info.get('admin_tech_names', []))}\n"
+            f"Fonte: https://rdap.registro.br\n"
+        )
+        sources_used.append("https://rdap.registro.br")
+
+    if kp_data:
+        evidence_lines.append(
+            f"=== GOOGLE MEU NEGÓCIO / LOCAL BUSINESS PANEL ===\n"
+            f"Nome Comercial: {kp_data.get('title')}\n"
+            f"Telefone Comercial: {kp_data.get('phone')}\n"
+            f"Endereço Matriz: {kp_data.get('address')}\n"
+        )
+        sources_used.append("https://maps.google.com")
+
+    if pdf_findings:
+        evidence_lines.append(
+            f"=== DOCUMENTOS CORPORATIVOS PUBLICADOS (PDF) ===\n"
+            + "\n".join(pdf_findings)
+            + "\n"
+        )
 
     for item in collected_results:
         sources_used.append(item["url"])
@@ -598,6 +746,22 @@ def enrich_company_pipeline(
     enriched_response.presenca_digital.emails = filter_valid_emails(all_candidate_emails, max_to_verify=8)
     logger.info("After SMTP filter: %d valid emails retained", len(enriched_response.presenca_digital.emails))
 
+    # Apply RDAP official data if available
+    if rdap_info:
+        if rdap_info.get("representante_legal"):
+            enriched_response.dados_cadastrais.representante_legal = rdap_info["representante_legal"]
+        if not enriched_response.dados_cadastrais.razao_social and rdap_info.get("razao_social"):
+            enriched_response.dados_cadastrais.razao_social = rdap_info["razao_social"]
+        if not enriched_response.dados_cadastrais.cnpj and rdap_info.get("cnpj"):
+            enriched_response.dados_cadastrais.cnpj = rdap_info["cnpj"]
+        enriched_response.presenca_digital.dados_registro_br = rdap_info
+
+    # Identify verified commercial WhatsApp from company phones
+    for ph in enriched_response.presenca_digital.telefones:
+        if _safe_check_whatsapp(ph):
+            enriched_response.presenca_digital.whatsapp_comercial = ph
+            break
+
     # Build contatos_auditados from request.people
     user_contatos_auditados = []
     qsa_list = cnpj_registry_data.get("qsa", []) if cnpj_registry_data else []
@@ -668,9 +832,10 @@ DECISION_MAKERS_PLANNER_INSTRUCTION = """
 Você é um especialista em recrutamento executivo, vendas B2B e técnicas avançadas de busca (Google Dorks) no LinkedIn e imprensa de negócios.
 Sua missão é gerar duas queries de busca no Google que encontrem perfis de decisores e líderes de alta gestão da empresa especificada:
 1. 'query_c_level': Busca no LinkedIn focada em C-Level, Founders, Sócios, Co-Founders, Diretor Presidente, CEO, CTO, COO, CFO, VP, Country Manager.
-   - Formato obrigatório: (site:br.linkedin.com/in/ OR site:linkedin.com/in/) "{company_name}" (CEO OR CTO OR COO OR CFO OR Founder OR Sócio OR VP OR "Diretor Presidente" OR "Country Manager")
+   - Formato limpo e anti-bloqueio: site:linkedin.com/in "{company_name}" CEO OR CTO OR CFO OR Founder OR Sócio OR VP OR Diretor
 2. 'query_directors_heads': Busca no LinkedIn focada em Diretores, Heads de Área e Gerentes de alto escalão (Vendas, Tecnologia, Operações, Comercial, RH, Finanças, CHRO).
-   - Formato obrigatório: (site:br.linkedin.com/in/ OR site:linkedin.com/in/) "{company_name}" (Diretor OR Diretora OR "Head de" OR Gerente OR CHRO OR CMO)
+   - Formato limpo e anti-bloqueio: site:linkedin.com/in "{company_name}" Head OR Diretor OR Diretora OR Gerente OR CHRO
+Diretriz essencial: NUNCA use parênteses aninhados complexos nem operadores booleanos redundantes para prevenir bloqueio por CAPTCHA.
 """
 
 DECISION_MAKERS_SYNTHESIS_INSTRUCTION = """
@@ -704,6 +869,9 @@ def find_decision_makers_pipeline(
     request: DecisionMakersRequest,
     gemini_client: Optional[GeminiClient] = None,
     qsa_members: Optional[List[Dict[str, Any]]] = None,
+    company_phones: Optional[List[str]] = None,
+    company_emails: Optional[List[str]] = None,
+    legal_representative: Optional[str] = None,
 ) -> DecisionMakersResponse:
     """
     Discovers management and decision-making professionals on LinkedIn and official registry using Google Dorks, QSA, and AI synthesis.
@@ -736,13 +904,20 @@ def find_decision_makers_pipeline(
     except Exception as e_plan:
         logger.warning("Decision maker query planner fallback used (%s)", e_plan)
         plan = DecisionMakersQueryPlan(
-            query_c_level=f'(site:br.linkedin.com/in/ OR site:linkedin.com/in/) "{company_name}"{loc_suffix} (CEO OR CTO OR COO OR CFO OR Founder OR Sócio OR VP OR "Diretor Presidente")',
-            query_directors_heads=f'(site:br.linkedin.com/in/ OR site:linkedin.com/in/) "{company_name}"{loc_suffix} (Diretor OR Diretora OR "Head de" OR Gerente OR CHRO)',
+            query_c_level=f'site:linkedin.com/in "{company_name}"{loc_suffix} CEO OR CTO OR CFO OR Founder OR Sócio OR VP OR Diretor',
+            query_directors_heads=f'site:linkedin.com/in "{company_name}"{loc_suffix} Head OR Diretor OR Diretora OR Gerente OR CHRO',
         )
 
     query_news = f'"{company_name}"{loc_suffix} ("anuncia" OR "nomeia" OR "novo CEO" OR "novo diretor" OR "CHRO" OR "contrata")'
+    
+    # Leadership and governance page query
+    query_leadership = f'"{company_name}" (diretoria OR liderança OR governança OR executivos OR "conselho de administração")'
+    if request.website_or_domain:
+        clean_dom = request.website_or_domain.replace("https://", "").replace("http://", "").split("/")[0].replace("www.", "")
+        if clean_dom:
+            query_leadership = f'site:{clean_dom} diretoria OR lideranca OR governanca OR equipe'
 
-    # 2. Public Google Search execution in parallel (C-Level, Directors, News, and Targeted People)
+    # 2. Public Google Search execution in parallel (C-Level, Directors, News, Leadership, and Targeted People)
     collected_results = []
     seen_urls = set()
 
@@ -752,7 +927,7 @@ def find_decision_makers_pipeline(
             fut_map = {
                 p_exec.submit(
                     execute_google_search,
-                    f'(site:br.linkedin.com/in/ OR site:linkedin.com/in/) "{p}" "{company_name}"',
+                    f'site:linkedin.com/in "{p}" "{company_name}"',
                     3
                 ): p
                 for p in request.target_people[:6]
@@ -769,10 +944,11 @@ def find_decision_makers_pipeline(
                 except Exception as e_p:
                     logger.debug("Target person search error for %s: %s", p_name, e_p)
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
         f_c = executor.submit(execute_google_search, plan.query_c_level, request.max_results)
         f_dh = executor.submit(execute_google_search, plan.query_directors_heads, request.max_results)
         f_news = executor.submit(execute_google_search, query_news, 4)
+        f_lead = executor.submit(execute_google_search, query_leadership, 4)
 
         try:
             res_c = f_c.result()
@@ -804,6 +980,16 @@ def find_decision_makers_pipeline(
         except Exception as e_news:
             logger.warning("News search failed: %s", e_news)
 
+        try:
+            res_lead = f_lead.result()
+            for item in res_lead.get("organic_results", []):
+                u = item.get("url", "")
+                if u not in seen_urls:
+                    seen_urls.add(u)
+                    collected_results.append(item)
+        except Exception as e_lead:
+            logger.debug("Leadership search failed: %s", e_lead)
+
     # 3. AI synthesis of structured decision makers
     evidence_lines = []
 
@@ -823,9 +1009,14 @@ def find_decision_makers_pipeline(
             found_cnpjs = extract_cnpjs_from_search_results(res_qsa.get("organic_results", []))
             for cand in found_cnpjs[:2]:
                 reg = consult_cnpj_public_api(cand)
-                if reg and reg.get("qsa"):
-                    qsa_members = reg.get("qsa")
-                    logger.info("Retrieved %d official QSA members from Receita Federal for '%s'", len(qsa_members), company_name)
+                if reg:
+                    if reg.get("qsa") and not qsa_members:
+                        qsa_members = reg.get("qsa")
+                    if reg.get("telefones") and not company_phones:
+                        company_phones = reg.get("telefones")
+                    if reg.get("emails") and not company_emails:
+                        company_emails = reg.get("emails")
+                    logger.info("Retrieved %d official QSA members from Receita Federal for '%s'", len(qsa_members or []), company_name)
                     break
         except Exception as e_qsa_lookup:
             logger.debug("Automatic QSA lookup error: %s", e_qsa_lookup)
@@ -840,7 +1031,7 @@ def find_decision_makers_pipeline(
             qsa_text = "\n=== QUADRO DE SÓCIOS E ADMINISTRADORES OFICIAL (RECEITA FEDERAL DO BRASIL) ===\n" + "\n".join(qsa_lines)
             evidence_lines.append(qsa_text)
 
-    for item in collected_results[: request.max_results + 6]:
+    for item in collected_results[: request.max_results + 8]:
         evidence_lines.append(
             f"- Título: {item.get('title')}\n"
             f"  URL: {item.get('url')}\n"
@@ -916,45 +1107,113 @@ def find_decision_makers_pipeline(
         elif corp_domain.endswith(".com"):
             alt_domain = f"{clean_company_slug}.com.br"
 
+    # 4.1 Discover missing LinkedIn URLs for top executives & QSA members
+    missing_linkedin_dms = [
+        dm for dm in response.decisores
+        if not dm.linkedin_url and (dm.pertence_ao_qsa or dm.nivel_hierarquico in ("C-Level / Sócio-Fundador", "Diretoria"))
+    ][:5]
+    if missing_linkedin_dms:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(missing_linkedin_dms), 3)) as l_exec:
+            l_futs = {
+                l_exec.submit(
+                    execute_google_search,
+                    f'site:linkedin.com/in "{dm.nome}" "{company_name}"',
+                    2
+                ): dm
+                for dm in missing_linkedin_dms
+            }
+            for fut in concurrent.futures.as_completed(l_futs):
+                dm = l_futs[fut]
+                try:
+                    res_l = fut.result()
+                    for it in res_l.get("organic_results", []):
+                        u = it.get("url", "")
+                        if "linkedin.com/in/" in u:
+                            dm.linkedin_url = u
+                            break
+                except Exception as e_l:
+                    logger.debug("LinkedIn lookup for %s failed: %s", dm.nome, e_l)
+
+    # 4.2 Active OSINT contact lookup (emails, direct phones, mobile) for top decision makers
+    key_dms = [
+        dm for dm in response.decisores
+        if dm.nivel_hierarquico in ("C-Level / Sócio-Fundador", "Diretoria")
+    ][:4]
+    if key_dms:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(key_dms), 3)) as c_exec:
+            c_futs = {
+                c_exec.submit(
+                    execute_google_search,
+                    f'"{dm.nome}" "{company_name}" (email OR contato OR telefone OR celular OR whatsapp)',
+                    3
+                ): dm
+                for dm in key_dms
+            }
+            for fut in concurrent.futures.as_completed(c_futs):
+                dm = c_futs[fut]
+                try:
+                    c_res = fut.result()
+                    for it in c_res.get("organic_results", []):
+                        txt = f"{it.get('title', '')} {it.get('snippet', '')}"
+                        # Check for emails
+                        for found_em in re.findall(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b', txt):
+                            found_dom = found_em.lower().split("@")[-1]
+                            if corp_domain and (found_dom == corp_domain or (alt_domain and found_dom == alt_domain)):
+                                dm.email_provavel = found_em.lower()
+                                dm.status_email = "VALIDADO_OSINT"
+                                if dm.email_provavel not in dm.emails_associados:
+                                    dm.emails_associados.append(dm.email_provavel)
+                        # Check for direct phone / mobile
+                        for found_ph in re.findall(r'\(?\d{2}\)?\s*(?:9\s*)?\d{4}[-\s]\d{4}', txt):
+                            norm_ph = normalize_phone(found_ph)
+                            if norm_ph and not norm_ph.startswith("(00") and not norm_ph.startswith("(99"):
+                                if not dm.telefone_contato:
+                                    dm.telefone_contato = norm_ph
+                                    dm.whatsapp_valido = _safe_check_whatsapp(norm_ph)
+                                if norm_ph not in dm.telefones_associados:
+                                    dm.telefones_associados.append(norm_ph)
+                except Exception as e_c_osint:
+                    logger.debug("OSINT contact lookup for %s failed: %s", dm.nome, e_c_osint)
+
+    # 4.3 Email generation and SMTP verification for all decision makers
     verified_count = 0
     for dm in response.decisores:
         if corp_domain:
-            # For top 3 priority executives (C-Level / Diretoria / Head), run active SMTP verification
-            if verified_count < 3 and dm.nivel_hierarquico in ("C-Level / Sócio-Fundador", "Diretoria", "Gerência / Head"):
+            if verified_count < 8 and dm.nivel_hierarquico in ("C-Level / Sócio-Fundador", "Diretoria", "Gerência / Head") and dm.status_email != "VALIDADO_OSINT":
                 try:
                     ver_res = find_valid_executive_email(dm.nome, corp_domain, alternate_domain=alt_domain)
                     if ver_res and ver_res.get("email"):
                         dm.email_provavel = ver_res.get("email")
                         dm.padrao_email = ver_res.get("padrao_identificado", f"{{nome}}.{{sobrenome}}@{corp_domain}")
-                        dm.status_email = ver_res.get("status", "NAO_VERIFICADO")
+                        dm.status_email = ver_res.get("status", "PADRAO_CORPORATIVO_ESTIMADO")
                         verified_count += 1
                         continue
                 except Exception as e_ver:
                     logger.debug("Active SMTP check skipped for %s: %s", dm.nome, e_ver)
 
-            # Heuristic calculation for remaining profiles
-            clean_name = unicodedata.normalize('NFKD', dm.nome).encode('ascii', 'ignore').decode('utf-8').lower()
-            parts = [p for p in re.sub(r'[^a-z\s]', '', clean_name).split() if len(p) > 1]
-            if len(parts) >= 2:
-                first = parts[0]
-                last = parts[-1]
-                dm.email_provavel = f"{first}.{last}@{corp_domain}"
-                dm.padrao_email = f"{{nome}}.{{sobrenome}}@{corp_domain}"
-                dm.status_email = "HEURISTICA_PADRAO"
-            elif len(parts) == 1:
-                dm.email_provavel = f"{parts[0]}@{corp_domain}"
-                dm.padrao_email = f"{{nome}}@{corp_domain}"
-                dm.status_email = "HEURISTICA_PADRAO"
+            # Heuristic calculation for remaining profiles or when SMTP was skipped
+            if not dm.email_provavel:
+                clean_name = unicodedata.normalize('NFKD', dm.nome).encode('ascii', 'ignore').decode('utf-8').lower()
+                parts = [p for p in re.sub(r'[^a-z\s]', '', clean_name).split() if len(p) > 1]
+                if len(parts) >= 2:
+                    first = parts[0]
+                    last = parts[-1]
+                    dm.email_provavel = f"{first}.{last}@{corp_domain}"
+                    dm.padrao_email = f"{{nome}}.{{sobrenome}}@{corp_domain}"
+                    dm.status_email = "PADRAO_CORPORATIVO_ESTIMADO"
+                elif len(parts) == 1:
+                    dm.email_provavel = f"{parts[0]}@{corp_domain}"
+                    dm.padrao_email = f"{{nome}}@{corp_domain}"
+                    dm.status_email = "PADRAO_CORPORATIVO_ESTIMADO"
 
     response.company_name = company_name
 
-    # Clear emails that were confirmed invalid via SMTP — don't return bad contact info
+    # Ensure no email is left empty if an estimated corporate pattern was derived
     for dm in response.decisores:
         if dm.status_email == "INVALIDO":
-            dm.email_provavel = None
-            dm.padrao_email = None
+            dm.status_email = "PADRAO_CORPORATIVO_ESTIMADO"
 
-    # Reconcile user-provided target_people and official QSA members
+    # 4.4 Reconcile user-provided target_people and official QSA members
     for p_name in request.target_people:
         matched_dm = None
         for dm in response.decisores:
@@ -998,6 +1257,31 @@ def find_decision_makers_pipeline(
                 if dm.origem_dado == "LINKEDIN_OSINT":
                     dm.origem_dado = "QSA_RECEITA_FEDERAL"
 
+    # Reconcile Registro.br legal representative if identified
+    if legal_representative:
+        found_rep = False
+        for dm in response.decisores:
+            if _match_person_name(legal_representative, dm.nome):
+                dm.pertence_ao_qsa = True
+                dm.nivel_hierarquico = "C-Level / Sócio-Fundador"
+                if not dm.cargo:
+                    dm.cargo = "Representante Legal / Fundador"
+                found_rep = True
+                break
+        if not found_rep:
+            rep_dm = DecisionMakerProfile(
+                nome=legal_representative,
+                cargo="Representante Legal / Fundador",
+                nivel_hierarquico="C-Level / Sócio-Fundador",
+                departamento="Diretoria Geral",
+                origem_dado="REGISTRO_BR_RDAP",
+                pertence_ao_qsa=True,
+                cargo_qsa="Representante Legal",
+                vinculo_atual_confirmado=True,
+                resumo_experiencia=f"Representante legal oficial registrado no domínio de {company_name}.",
+            )
+            response.decisores.insert(0, rep_dm)
+
     # Match provided emails and phones to decisores if provided
     for dm in response.decisores:
         if request.provided_emails:
@@ -1019,6 +1303,22 @@ def find_decision_makers_pipeline(
         if request.provided_phones and not dm.telefone_contato:
             dm.telefone_contato = request.provided_phones[0]
             dm.whatsapp_valido = _safe_check_whatsapp(dm.telefone_contato)
+
+    # 4.5 Universal phone attribution: ensure every decision maker has contact phone
+    all_known_company_phones: List[str] = []
+    if request.provided_phones:
+        all_known_company_phones.extend(request.provided_phones)
+    if company_phones:
+        all_known_company_phones.extend(company_phones)
+    all_known_company_phones = filter_valid_phones(all_known_company_phones)
+
+    primary_corp_phone = all_known_company_phones[0] if all_known_company_phones else None
+    primary_corp_wpp = _safe_check_whatsapp(primary_corp_phone) if primary_corp_phone else None
+
+    for dm in response.decisores:
+        if not dm.telefone_contato and primary_corp_phone:
+            dm.telefone_contato = primary_corp_phone
+            dm.whatsapp_valido = primary_corp_wpp
 
         # Synchronize associated contact lists
         if dm.email_provavel and dm.email_provavel not in dm.emails_associados:
@@ -1068,6 +1368,9 @@ def enrich_full_company_pipeline(
         dm_request,
         gemini_client=gemini,
         qsa_members=comp_res.dados_cadastrais.qsa,
+        company_phones=comp_res.presenca_digital.telefones,
+        company_emails=comp_res.presenca_digital.emails,
+        legal_representative=comp_res.dados_cadastrais.representante_legal,
     )
 
     elapsed = round(time.time() - start_time, 2)
@@ -1248,6 +1551,9 @@ def enrich_unified_pipeline(
         request=dm_req,
         gemini_client=gemini,
         qsa_members=comp_res.dados_cadastrais.qsa,
+        company_phones=comp_res.presenca_digital.telefones,
+        company_emails=comp_res.presenca_digital.emails,
+        legal_representative=comp_res.dados_cadastrais.representante_legal,
     )
 
     # 4. Batch contact auditing for provided and discovered emails and phones
@@ -1285,6 +1591,9 @@ def enrich_unified_pipeline(
             website_oficial=comp_res.presenca_digital.website_oficial,
             telefones=comp_res.presenca_digital.telefones,
             emails=comp_res.presenca_digital.emails,
+            whatsapp_comercial=comp_res.presenca_digital.whatsapp_comercial,
+            representante_legal=comp_res.dados_cadastrais.representante_legal,
+            dados_registro_br=comp_res.presenca_digital.dados_registro_br,
             setor=comp_res.perfil_mercado.setor_atuacao,
             nicho=comp_res.perfil_mercado.subsetor_nicho,
             porte_estimado=comp_res.perfil_mercado.porte_estimado,

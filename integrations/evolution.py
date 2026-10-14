@@ -102,6 +102,61 @@ class EvolutionClient:
                 return bool(data.get("exists", False))
             return False
 
+    def check_whatsapp_sync(self, phone: str) -> Dict[str, Any]:
+        """
+        Synchronously checks if a phone number exists on WhatsApp and optionally fetches profile details.
+        Safe for use inside threads and Celery tasks without asyncio event loop complications.
+        """
+        try:
+            norm = format_brazilian_phone(phone)
+        except Exception:
+            return {"valid": False, "exists": False, "phone": phone, "is_business": False, "name": None, "picture_url": None}
+
+        url = f"{self.base_url}/chat/whatsappNumbers/{self.instance}"
+        payload = {"numbers": [norm]}
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                resp = client.post(url, headers=self.headers, json=payload)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    item = data[0] if isinstance(data, list) and data else {}
+                    exists = bool(item.get("exists", False))
+                    jid = item.get("jid")
+                    is_business = False
+                    name = item.get("name") or None
+                    picture_url = None
+
+                    if exists:
+                        try:
+                            prof_url = f"{self.base_url}/chat/fetchProfile/{self.instance}"
+                            prof_resp = client.post(prof_url, headers=self.headers, json={"number": norm})
+                            if prof_resp.status_code == 200:
+                                p_data = prof_resp.json()
+                                is_business = bool(p_data.get("isBusiness", False))
+                                if not name and p_data.get("name"):
+                                    name = p_data.get("name")
+                                picture_url = p_data.get("picture")
+                        except Exception:
+                            pass
+
+                    return {
+                        "valid": True,
+                        "exists": exists,
+                        "jid": jid,
+                        "phone": norm,
+                        "is_business": is_business,
+                        "name": name,
+                        "picture_url": picture_url,
+                    }
+        except Exception as e:
+            logger.debug("Evolution API sync check failed for %s: %s", norm, e)
+        return {"valid": False, "exists": False, "phone": norm, "is_business": False, "name": None, "picture_url": None}
+
+    def check_whatsapp_number_sync(self, phone: str) -> bool:
+        """Synchronous check if a phone number is registered on WhatsApp."""
+        info = self.check_whatsapp_sync(phone)
+        return bool(info.get("exists", False))
+
     async def send_text_message(self, phone: str, text: str) -> Dict[str, Any]:
         """
         Sends a plain text WhatsApp message to the recipient.

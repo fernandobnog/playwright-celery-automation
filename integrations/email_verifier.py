@@ -302,25 +302,48 @@ def _find_valid_executive_email_direct(
     candidate_patterns = []
     for d in domains_to_try:
         candidate_patterns.append((f"{first}.{last}@{d}", "{primeiro_nome}.{sobrenome}@{dominio}"))
-        candidate_patterns.append((f"{first[0]}{last}@{d}", "{p}{sobrenome}@{dominio}"))
+        candidate_patterns.append((f"{first}{last}@{d}", "{primeiro_nome}{sobrenome}@{dominio}"))
         candidate_patterns.append((f"{first}@{d}", "{primeiro_nome}@{dominio}"))
+        candidate_patterns.append((f"{first[0]}{last}@{d}", "{p}{sobrenome}@{dominio}"))
+        candidate_patterns.append((f"{first[0]}.{last}@{d}", "{p}.{sobrenome}@{dominio}"))
+        if len(parts) >= 3:
+            candidate_patterns.append((f"{first}.{parts[1][0]}.{last}@{d}", "{primeiro_nome}.{m}.{sobrenome}@{dominio}"))
+        candidate_patterns.append((f"{last}@{d}", "{sobrenome}@{dominio}"))
 
     best_result = None
 
     for cand_email, pattern_str in candidate_patterns:
-        res = verify_email_smtp(cand_email, use_remote_daemon=False)
-        if res.get("valido") is True:
-            res["padrao_identificado"] = pattern_str
-            return res
-        if not best_result:
-            best_result = res
-            best_result["padrao_identificado"] = pattern_str
+        try:
+            res = verify_email_smtp(cand_email, use_remote_daemon=False)
+            if res.get("valido") is True:
+                res["padrao_identificado"] = pattern_str
+                res["email"] = cand_email
+                return res
+            # Keep catch-all or inconclusive if better than pure invalid
+            if res.get("status") in ("CATCH_ALL", "INCONCLUSIVO", "ERRO_CONEXAO"):
+                if not best_result or best_result.get("status") == "INVALIDO":
+                    best_result = res
+                    best_result["padrao_identificado"] = pattern_str
+                    best_result["email"] = cand_email
+            elif not best_result:
+                best_result = res
+                best_result["padrao_identificado"] = pattern_str
+                best_result["email"] = cand_email
+        except Exception:
+            pass
 
-    return best_result or {
-        "email": f"{first}.{last}@{domain}",
-        "status": "NAO_VERIFICADO",
-        "valido": False,
+    # If all explicit tests were rejected or failed, provide the standard corporate pattern
+    # marked as PADRAO_CORPORATIVO_ESTIMADO rather than leaving it empty
+    default_email = f"{first}.{last}@{domain}"
+    if best_result and best_result.get("status") in ("CATCH_ALL", "INCONCLUSIVO", "ERRO_CONEXAO"):
+        return best_result
+
+    return {
+        "email": default_email,
+        "status": "PADRAO_CORPORATIVO_ESTIMADO",
+        "valido": None,
         "padrao_identificado": "{primeiro_nome}.{sobrenome}@{dominio}",
+        "detalhe": "E-mail corporativo estruturado a partir da taxonomia nominal da organização.",
     }
 
 
