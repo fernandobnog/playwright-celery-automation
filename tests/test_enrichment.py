@@ -237,6 +237,8 @@ def test_find_decision_makers_pipeline_mocked():
 
     with patch("flows.flow_company_enrichment.execute_google_search", return_value=mock_search), \
          patch("flows.flow_company_enrichment.consult_cnpj_public_api", return_value=None), \
+         patch("flows.flow_company_enrichment.find_valid_executive_email", return_value={"email": "carlos.netto@matera.com", "valido": True, "status": "VALIDADO_SMTP"}), \
+         patch("flows.flow_company_enrichment.b2b_waterfall_enrich_person", return_value=None), \
          patch("flows.flow_company_enrichment.verify_email_smtp", return_value=False), \
          patch("flows.flow_company_enrichment._safe_check_whatsapp", return_value=None):
         result = find_decision_makers_pipeline(req, gemini_client=mock_gemini)
@@ -926,6 +928,262 @@ def test_enrichment_rdap_pdf_and_google_business_panel():
         wpp_check = evo.check_whatsapp_sync("(11) 99999-8888")
         assert wpp_check["exists"] is True
         assert wpp_check["phone"] == "5511999998888"
+
+
+def test_corporate_email_permutations():
+    """Validates combinatorial corporate email permutations for executives."""
+    from integrations.email_verifier import generate_corporate_email_permutations
+
+    perms = generate_corporate_email_permutations("Dennis Herszkowicz", "totvs.com.br")
+    emails = [p[0] for p in perms]
+
+    assert "dennis.herszkowicz@totvs.com.br" in emails
+    assert "dennisherszkowicz@totvs.com.br" in emails
+    assert "dennis@totvs.com.br" in emails
+    assert "herszkowicz@totvs.com.br" in emails
+    assert "dherszkowicz@totvs.com.br" in emails
+    assert "d.herszkowicz@totvs.com.br" in emails
+    assert "dennis_herszkowicz@totvs.com.br" in emails
+    assert "herszkowicz.dennis@totvs.com.br" in emails
+    assert "herszkowiczdennis@totvs.com.br" in emails
+    assert "hdennis@totvs.com.br" in emails
+    assert "h.dennis@totvs.com.br" in emails
+    assert "dennis.h@totvs.com.br" in emails
+    assert "dennish@totvs.com.br" in emails
+
+    # Test 3-part name (with middle name)
+    perms_middle = generate_corporate_email_permutations("Dennis Silva Herszkowicz", "totvs.com.br")
+    emails_middle = [p[0] for p in perms_middle]
+    assert "dennis.silva@totvs.com.br" in emails_middle
+    assert "dennis.s.herszkowicz@totvs.com.br" in emails_middle
+    assert "dsherszkowicz@totvs.com.br" in emails_middle
+    assert "dennis.silva.herszkowicz@totvs.com.br" in emails_middle
+    assert "dennis_silva_herszkowicz@totvs.com.br" in emails_middle
+
+
+def test_cnpj_waterfall_receitaws_and_cnpjws():
+    """Validates 4-tier CNPJ waterfall falling back to ReceitaWS and CNPJ.ws."""
+    import json
+    import urllib.error
+    from io import BytesIO
+    from integrations.receita import consult_cnpj_public_api
+
+    cnpj_totvs = "53.113.791/0001-22"
+
+    # Scenario 1: Minha Receita fails (500), BrasilAPI fails (500), ReceitaWS succeeds
+    fake_receitaws_payload = json.dumps({
+        "status": "OK",
+        "nome": "TOTVS S.A.",
+        "fantasia": "TOTVS",
+        "situacao": "ATIVA",
+        "abertura": "01/01/1983",
+        "telefone": "(11) 2069-4000 / (11) 2069-4001",
+        "email": "ri@totvs.com.br",
+        "municipio": "SAO PAULO",
+        "uf": "SP",
+        "logradouro": "AVENIDA BRAZ LEME",
+        "numero": "1000",
+        "bairro": "CASA VERDE",
+        "cep": "02.511-000",
+        "atividade_principal": [{"text": "Desenvolvimento de programas de computador customizáveis"}],
+        "qsa": [
+            {"nome": "DENNIS HERSZKOWICZ", "qual": "Diretor Presidente"},
+            {"nome": "GILSOMAR SILVA", "qual": "Diretor"},
+        ]
+    }).encode("utf-8")
+
+    def fake_urlopen_receitaws(req, timeout=5):
+        url = req.full_url if hasattr(req, "full_url") else str(req)
+        if "minhareceita.org" in url or "brasilapi.com.br" in url:
+            raise urllib.error.HTTPError(url, 500, "Internal Server Error", {}, BytesIO(b"{}"))
+        if "receitaws.com.br" in url:
+            resp = MagicMock()
+            resp.status = 200
+            resp.__enter__.return_value = resp
+            resp.read.return_value = fake_receitaws_payload
+            return resp
+        raise urllib.error.HTTPError(url, 404, "Not Found", {}, BytesIO(b"{}"))
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen_receitaws):
+        res = consult_cnpj_public_api(cnpj_totvs)
+        assert res is not None
+        assert res["razao_social"] == "Totvs S.A."
+        assert res["nome_fantasia"] == "Totvs"
+        assert res["fonte"] == "Receita Federal (ReceitaWS)"
+        assert len(res["qsa"]) == 2
+        assert res["qsa"][0]["nome"] == "Dennis Herszkowicz"
+        assert res["qsa"][0]["cargo"] == "Diretor Presidente"
+        assert "ri@totvs.com.br" in res["emails"]
+        assert len(res["telefones"]) >= 1
+
+    # Scenario 2: Minha Receita, BrasilAPI, and ReceitaWS fail; CNPJ.ws succeeds
+    fake_cnpjws_payload = json.dumps({
+        "razao_social": "TOTVS S.A.",
+        "estabelecimento": {
+            "nome_fantasia": "TOTVS MATRIZ",
+            "situacao_cadastral": "Ativa",
+            "data_inicio_atividade": "1983-01-01",
+            "telefone1": "1120694000",
+            "telefone2": "1120694001",
+            "email": "contato@totvs.com.br",
+            "cidade": {"nome": "São Paulo"},
+            "estado": {"sigla": "SP"},
+            "logradouro": "Av. Braz Leme",
+            "numero": "1000",
+            "bairro": "Casa Verde",
+            "cep": "02511000",
+            "atividade_principal": {"descricao": "Consultoria em TI"}
+        },
+        "socios": [
+            {"nome": "DENNIS HERSZKOWICZ", "qualificacao_socio": {"descricao": "Diretor Presidente"}}
+        ]
+    }).encode("utf-8")
+
+    def fake_urlopen_cnpjws(req, timeout=5):
+        url = req.full_url if hasattr(req, "full_url") else str(req)
+        if "minhareceita.org" in url or "brasilapi.com.br" in url or "receitaws.com.br" in url:
+            raise urllib.error.HTTPError(url, 500, "Internal Server Error", {}, BytesIO(b"{}"))
+        if "publica.cnpj.ws" in url:
+            resp = MagicMock()
+            resp.status = 200
+            resp.__enter__.return_value = resp
+            resp.read.return_value = fake_cnpjws_payload
+            return resp
+        raise urllib.error.HTTPError(url, 404, "Not Found", {}, BytesIO(b"{}"))
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen_cnpjws):
+        res = consult_cnpj_public_api(cnpj_totvs)
+        assert res is not None
+        assert res["razao_social"] == "Totvs S.A."
+        assert res["fonte"] == "Receita Federal (CNPJ.ws)"
+        assert len(res["qsa"]) == 1
+        assert res["qsa"][0]["nome"] == "Dennis Herszkowicz"
+        assert "contato@totvs.com.br" in res["emails"]
+
+
+def test_b2b_waterfall_rotation_and_enrichment():
+    """Validates B2B Waterfall rotation when primary provider hits quota limit."""
+    from integrations.b2b_waterfall import b2b_waterfall_enrich_person, hunter_domain_search
+    from core.config import settings
+
+    # Ensure keys are temporarily populated for test
+    with patch.object(settings, "APOLLO_API_KEY", "mock_apollo_key"), \
+         patch.object(settings, "HUNTER_API_KEY", "mock_hunter_key"):
+
+        # Mock Apollo returning 429 quota exhaustion, Hunter returning verified lead
+        def fake_httpx_post(url, *args, **kwargs):
+            if "apollo.io" in str(url):
+                mock_resp = MagicMock()
+                mock_resp.status_code = 429
+                return mock_resp
+            return MagicMock(status_code=404)
+
+        def fake_httpx_get(url, *args, **kwargs):
+            if "hunter.io/v2/email-finder" in str(url):
+                mock_resp = MagicMock()
+                mock_resp.status_code = 200
+                mock_resp.json.return_value = {
+                    "data": {
+                        "email": "dennis.herszkowicz@totvs.com.br",
+                        "score": 95,
+                        "position": "CEO",
+                        "linkedin_url": "https://linkedin.com/in/dennisherszkowicz",
+                    }
+                }
+                return mock_resp
+            return MagicMock(status_code=404)
+
+        with patch("httpx.Client.post", side_effect=fake_httpx_post), \
+             patch("httpx.Client.get", side_effect=fake_httpx_get):
+            res = b2b_waterfall_enrich_person(
+                full_name="Dennis Herszkowicz",
+                company_name="TOTVS",
+                domain="totvs.com.br",
+            )
+            assert res is not None
+            assert res.success is True
+            assert res.provider == "hunter"
+            assert res.email == "dennis.herszkowicz@totvs.com.br"
+            assert res.linkedin_url == "https://linkedin.com/in/dennisherszkowicz"
+
+    # Test hunter_domain_search
+    with patch.object(settings, "HUNTER_API_KEY", "mock_hunter_key"):
+        fake_domain_data = {
+            "data": {
+                "pattern": "{first}.{last}",
+                "organization": "TOTVS",
+                "emails": [{"value": "contato@totvs.com.br"}, {"value": "suporte@totvs.com.br"}],
+            }
+        }
+        with patch("httpx.Client.get") as mock_get:
+            mock_get.return_value = MagicMock(status_code=200, json=lambda: fake_domain_data)
+            domain_res = hunter_domain_search("totvs.com.br")
+            assert domain_res is not None
+            assert domain_res["pattern"] == "{first}.{last}"
+            assert "contato@totvs.com.br" in domain_res["emails"]
+
+
+def test_find_decision_makers_pipeline_with_b2b_waterfall_integration():
+    """Validates find_decision_makers_pipeline integration with B2B Waterfall."""
+    from api.schemas.enrichment import (
+        DecisionMakerProfile,
+        DecisionMakersQueryPlan,
+        DecisionMakersRequest,
+        DecisionMakersResponse,
+    )
+    from flows.flow_company_enrichment import find_decision_makers_pipeline
+    from integrations.b2b_waterfall import B2BContactResult
+
+    mock_gemini = MagicMock()
+    mock_plan = DecisionMakersQueryPlan(
+        query_c_level='site:linkedin.com/in/ "TOTVS" CEO',
+        query_directors_heads='site:linkedin.com/in/ "TOTVS" Diretor',
+    )
+    mock_response = DecisionMakersResponse(
+        status="SUCCESS",
+        company_name="TOTVS",
+        total_encontrados=1,
+        analise_estrategica_contato="Abordar Dennis Herszkowicz diretamente para pautas executivas.",
+        decisores=[
+            DecisionMakerProfile(
+                nome="Dennis Herszkowicz",
+                cargo="Diretor Presidente e CEO",
+                nivel_hierarquico="C-Level / Sócio-Fundador",
+                departamento="Diretoria Geral",
+                localizacao="São Paulo, SP",
+            )
+        ],
+    )
+    mock_gemini.generate_structured.side_effect = [mock_plan, mock_response]
+
+    fake_b2b_res = B2BContactResult(
+        provider="apollo",
+        success=True,
+        email="dennis.herszkowicz@totvs.com.br",
+        phones=["(11) 98765-4321"],
+        linkedin_url="https://linkedin.com/in/dennisherszkowicz",
+    )
+
+    req = DecisionMakersRequest(company_name="TOTVS", max_results=1)
+
+    with patch("flows.flow_company_enrichment.execute_google_search", return_value={"organic_results": []}), \
+         patch("flows.flow_company_enrichment.consult_cnpj_public_api", return_value=None), \
+         patch("flows.flow_company_enrichment.b2b_waterfall_enrich_person", return_value=fake_b2b_res), \
+         patch("flows.flow_company_enrichment.find_valid_executive_email") as mock_find_email, \
+         patch("flows.flow_company_enrichment._safe_check_whatsapp", return_value=True):
+        res = find_decision_makers_pipeline(req, gemini_client=mock_gemini)
+
+    # Assert B2B result populated the decision maker
+    assert len(res.decisores) == 1
+    dm = res.decisores[0]
+    assert dm.email_provavel == "dennis.herszkowicz@totvs.com.br"
+    assert dm.status_email == "VALIDADO_APOLLO"
+    assert dm.telefone_contato == "(11) 98765-4321"
+    assert dm.whatsapp_valido is True
+    assert dm.linkedin_url == "https://linkedin.com/in/dennisherszkowicz"
+    # Ensure active SMTP was skipped since status was already VALIDADO_APOLLO
+    mock_find_email.assert_not_called()
+
 
 
 

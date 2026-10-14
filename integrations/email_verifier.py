@@ -282,6 +282,56 @@ def verify_email_smtp(
     return _verify_email_smtp_direct(email, sender, helo_host, timeout)
 
 
+def generate_corporate_email_permutations(full_name: str, domain: str) -> List[Tuple[str, str]]:
+    """
+    Generates an exhaustive, prioritized combinatorial list of corporate email address permutations
+    for a given individual's name and corporate domain.
+    """
+    clean_name = unicodedata.normalize("NFKD", full_name).encode("ascii", "ignore").decode("utf-8").lower()
+    parts = [p for p in re.sub(r"[^a-z\s]", "", clean_name).split() if len(p) > 1]
+    if not parts:
+        return []
+
+    first = parts[0]
+    last = parts[-1]
+    d = domain.lower().replace("http://", "").replace("https://", "").split("/")[0].replace("www.", "")
+
+    patterns: List[Tuple[str, str]] = [
+        (f"{first}.{last}@{d}", "{nome}.{sobrenome}@{dominio}"),
+        (f"{first}{last}@{d}", "{nome}{sobrenome}@{dominio}"),
+        (f"{first}@{d}", "{nome}@{dominio}"),
+        (f"{first[0]}{last}@{d}", "{p}{sobrenome}@{dominio}"),
+        (f"{first[0]}.{last}@{d}", "{p}.{sobrenome}@{dominio}"),
+        (f"{first}_{last}@{d}", "{nome}_{sobrenome}@{dominio}"),
+        (f"{last}.{first}@{d}", "{sobrenome}.{nome}@{dominio}"),
+        (f"{last}{first}@{d}", "{sobrenome}{nome}@{dominio}"),
+        (f"{last}@{d}", "{sobrenome}@{dominio}"),
+        (f"{last[0]}{first}@{d}", "{s}{nome}@{dominio}"),
+        (f"{last[0]}.{first}@{d}", "{s}.{nome}@{dominio}"),
+        (f"{first}.{last[0]}@{d}", "{nome}.{s}@{dominio}"),
+        (f"{first}{last[0]}@{d}", "{nome}{s}@{dominio}"),
+    ]
+
+    if len(parts) >= 3:
+        second = parts[1]
+        patterns.extend([
+            (f"{first}.{second}@{d}", "{nome}.{segundo_nome}@{dominio}"),
+            (f"{first}{second}@{d}", "{nome}{segundo_nome}@{dominio}"),
+            (f"{first}.{second[0]}.{last}@{d}", "{nome}.{m_inicial}.{sobrenome}@{dominio}"),
+            (f"{first[0]}{second[0]}{last}@{d}", "{p}{s}{sobrenome}@{dominio}"),
+            (f"{first}.{second}.{last}@{d}", "{nome}.{segundo_nome}.{sobrenome}@{dominio}"),
+            (f"{first}_{second}_{last}@{d}", "{nome}_{segundo_nome}_{sobrenome}@{dominio}"),
+        ])
+
+    seen = set()
+    unique: List[Tuple[str, str]] = []
+    for em, pat in patterns:
+        if em not in seen:
+            seen.add(em)
+            unique.append((em, pat))
+    return unique
+
+
 def _find_valid_executive_email_direct(
     full_name: str,
     domain: str,
@@ -299,16 +349,9 @@ def _find_valid_executive_email_direct(
     if alternate_domain and alternate_domain != domain:
         domains_to_try.append(alternate_domain)
 
-    candidate_patterns = []
+    candidate_patterns: List[Tuple[str, str]] = []
     for d in domains_to_try:
-        candidate_patterns.append((f"{first}.{last}@{d}", "{primeiro_nome}.{sobrenome}@{dominio}"))
-        candidate_patterns.append((f"{first}{last}@{d}", "{primeiro_nome}{sobrenome}@{dominio}"))
-        candidate_patterns.append((f"{first}@{d}", "{primeiro_nome}@{dominio}"))
-        candidate_patterns.append((f"{first[0]}{last}@{d}", "{p}{sobrenome}@{dominio}"))
-        candidate_patterns.append((f"{first[0]}.{last}@{d}", "{p}.{sobrenome}@{dominio}"))
-        if len(parts) >= 3:
-            candidate_patterns.append((f"{first}.{parts[1][0]}.{last}@{d}", "{primeiro_nome}.{m}.{sobrenome}@{dominio}"))
-        candidate_patterns.append((f"{last}@{d}", "{sobrenome}@{dominio}"))
+        candidate_patterns.extend(generate_corporate_email_permutations(full_name, d))
 
     best_result = None
 

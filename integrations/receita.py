@@ -203,4 +203,138 @@ def consult_cnpj_public_api(cnpj: str, timeout: int = 5) -> Optional[Dict[str, A
     except Exception as e_bapi:
         logger.warning("BrasilAPI query failed for %s: %s", clean_cnpj, e_bapi)
 
+    # 3. Fallback: ReceitaWS
+    url_receitaws = f"https://receitaws.com.br/v1/cnpj/{clean_cnpj}"
+    try:
+        req = urllib.request.Request(
+            url_receitaws,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)",
+                "Accept": "application/json",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status == 200:
+                data = json.loads(resp.read().decode("utf-8"))
+                if data.get("status") != "ERROR":
+                    qsa = []
+                    for s in data.get("qsa", []):
+                        nome = s.get("nome")
+                        if nome:
+                            qsa.append({
+                                "nome": nome.strip().title(),
+                                "cargo": s.get("qual", "Sócio"),
+                                "faixa_etaria": None,
+                                "tipo": "Pessoa Física",
+                            })
+
+                    telefones = []
+                    raw_tel = data.get("telefone", "")
+                    if raw_tel:
+                        for part in re.split(r"[/,;\n]+", raw_tel):
+                            p = format_phone(part.strip())
+                            if p and p not in telefones:
+                                telefones.append(p)
+
+                    emails = []
+                    raw_email = (data.get("email") or "").strip().lower()
+                    if raw_email and "@" in raw_email:
+                        emails.append(raw_email)
+
+                    cnae_desc = data.get("atividade_principal", [{}])[0].get("text") if data.get("atividade_principal") else None
+
+                    formatted = {
+                        "cnpj": format_cnpj(clean_cnpj),
+                        "cnpj_limpo": clean_cnpj,
+                        "razao_social": data.get("nome", "").strip().title(),
+                        "nome_fantasia": (data.get("fantasia") or "").strip().title() or None,
+                        "situacao_cadastral": data.get("situacao") or "Ativa",
+                        "data_abertura": data.get("abertura"),
+                        "cnae_fiscal_descricao": cnae_desc,
+                        "municipio": data.get("municipio", "").strip().title(),
+                        "uf": data.get("uf", "").strip().upper(),
+                        "sede": f"{data.get('municipio', '').strip().title()} - {data.get('uf', '').strip().upper()}",
+                        "logradouro": data.get("logradouro"),
+                        "numero": data.get("numero"),
+                        "bairro": data.get("bairro"),
+                        "cep": data.get("cep"),
+                        "telefones": telefones,
+                        "emails": emails,
+                        "qsa": qsa,
+                        "fonte": "Receita Federal (ReceitaWS)",
+                    }
+                    logger.info("ReceitaWS succeeded for CNPJ %s (%s)", formatted["cnpj"], formatted["razao_social"])
+                    return formatted
+    except Exception as e_rws:
+        logger.warning("ReceitaWS query failed for %s: %s", clean_cnpj, e_rws)
+
+    # 4. Fallback: CNPJ.ws
+    url_cnpjws = f"https://publica.cnpj.ws/cnpj/{clean_cnpj}"
+    try:
+        req = urllib.request.Request(
+            url_cnpjws,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)",
+                "Accept": "application/json",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status == 200:
+                data = json.loads(resp.read().decode("utf-8"))
+                est = data.get("estabelecimento") or {}
+                qsa = []
+                for s in data.get("socios", []):
+                    nome = s.get("nome")
+                    if nome:
+                        qual_desc = s.get("qualificacao_socio", {}).get("descricao", "Sócio") if isinstance(s.get("qualificacao_socio"), dict) else "Sócio"
+                        qsa.append({
+                            "nome": nome.strip().title(),
+                            "cargo": qual_desc,
+                            "faixa_etaria": s.get("faixa_etaria"),
+                            "tipo": s.get("tipo", "Pessoa Física"),
+                        })
+
+                telefones = []
+                for d_k, t_k in [("ddd1", "telefone1"), ("ddd2", "telefone2")]:
+                    ddd = est.get(d_k)
+                    num = est.get(t_k)
+                    if ddd and num:
+                        p = format_phone(f"{ddd}{num}")
+                        if p and p not in telefones:
+                            telefones.append(p)
+
+                emails = []
+                raw_email = (est.get("email") or "").strip().lower()
+                if raw_email and "@" in raw_email:
+                    emails.append(raw_email)
+
+                cidade_nome = est.get("cidade", {}).get("nome", "") if isinstance(est.get("cidade"), dict) else ""
+                estado_sigla = est.get("estado", {}).get("sigla", "") if isinstance(est.get("estado"), dict) else ""
+                cnae_desc = est.get("atividade_principal", {}).get("descricao") if isinstance(est.get("atividade_principal"), dict) else None
+
+                formatted = {
+                    "cnpj": format_cnpj(clean_cnpj),
+                    "cnpj_limpo": clean_cnpj,
+                    "razao_social": data.get("razao_social", "").strip().title(),
+                    "nome_fantasia": (est.get("nome_fantasia") or "").strip().title() or None,
+                    "situacao_cadastral": est.get("situacao_cadastral") or "Ativa",
+                    "data_abertura": est.get("data_inicio_atividade"),
+                    "cnae_fiscal_descricao": cnae_desc,
+                    "municipio": cidade_nome.strip().title(),
+                    "uf": estado_sigla.strip().upper(),
+                    "sede": f"{cidade_nome.strip().title()} - {estado_sigla.strip().upper()}",
+                    "logradouro": est.get("logradouro"),
+                    "numero": est.get("numero"),
+                    "bairro": est.get("bairro"),
+                    "cep": est.get("cep"),
+                    "telefones": telefones,
+                    "emails": emails,
+                    "qsa": qsa,
+                    "fonte": "Receita Federal (CNPJ.ws)",
+                }
+                logger.info("CNPJ.ws succeeded for CNPJ %s (%s)", formatted["cnpj"], formatted["razao_social"])
+                return formatted
+    except Exception as e_cws:
+        logger.warning("CNPJ.ws query failed for %s: %s", clean_cnpj, e_cws)
+
     return None

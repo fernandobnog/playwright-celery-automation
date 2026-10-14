@@ -54,6 +54,7 @@ from integrations.email_verifier import (
     verify_email_smtp,
 )
 from integrations.rdap_client import clean_domain_for_rdap, consult_rdap_registro_br
+from integrations.b2b_waterfall import b2b_waterfall_enrich_person, hunter_domain_search
 from scrapers.ai_extractor import ai_extractor
 from scrapers.google_scraper import GoogleSearchScraper
 
@@ -509,6 +510,23 @@ def enrich_company_pipeline(
                         site_phones.add(norm_ph)
         except Exception as e_pdf:
             logger.debug("PDF dorking error: %s", e_pdf)
+
+    # --------------------------------------------------------------------------
+    # Stage 2.8: Hunter.io Domain Pattern Discovery (if HUNTER_API_KEY is configured)
+    # --------------------------------------------------------------------------
+    if pdf_domain:
+        try:
+            hunter_data = hunter_domain_search(pdf_domain)
+            if hunter_data:
+                for em in hunter_data.get("emails", []):
+                    site_emails.add(em.lower())
+                if hunter_data.get("pattern"):
+                    evidence_lines.append(
+                        f"=== PADRÃO DE E-MAIL CORPORATIVO CONFIRMADO (HUNTER.IO) ===\n"
+                        f"Fórmula: {hunter_data['pattern']}@{pdf_domain}\n"
+                    )
+        except Exception as e_h:
+            logger.debug("Hunter domain search error: %s", e_h)
 
     # --------------------------------------------------------------------------
     # Stage 3: Deep Scraping of Candidate Official Website (Optional)
@@ -1134,12 +1152,42 @@ def find_decision_makers_pipeline(
                 except Exception as e_l:
                     logger.debug("LinkedIn lookup for %s failed: %s", dm.nome, e_l)
 
-    # 4.2 Active OSINT contact lookup (emails, direct phones, mobile) for top decision makers
+    # 4.2 Active B2B Waterfall & OSINT contact lookup (emails, direct phones, mobile) for top decision makers
     key_dms = [
         dm for dm in response.decisores
         if dm.nivel_hierarquico in ("C-Level / Sócio-Fundador", "Diretoria")
     ][:4]
     if key_dms:
+        # Step A: B2B Intelligence Waterfall (Apollo -> Hunter -> Snov -> PDL -> Kaspr -> Lusha -> SalesQL)
+        for dm in key_dms:
+            try:
+                b2b_res = b2b_waterfall_enrich_person(
+                    full_name=dm.nome,
+                    company_name=company_name,
+                    domain=corp_domain,
+                    linkedin_url=dm.linkedin_url,
+                )
+                if b2b_res and b2b_res.success:
+                    if b2b_res.email:
+                        dm.email_provavel = b2b_res.email.lower()
+                        dm.status_email = f"VALIDADO_{b2b_res.provider.upper()}"
+                        if dm.email_provavel not in dm.emails_associados:
+                            dm.emails_associados.append(dm.email_provavel)
+                    if b2b_res.phones:
+                        for ph in b2b_res.phones:
+                            norm_ph = normalize_phone(ph) or ph
+                            if norm_ph and not norm_ph.startswith("(00") and not norm_ph.startswith("(99"):
+                                if not dm.telefone_contato:
+                                    dm.telefone_contato = norm_ph
+                                    dm.whatsapp_valido = _safe_check_whatsapp(norm_ph)
+                                if norm_ph not in dm.telefones_associados:
+                                    dm.telefones_associados.append(norm_ph)
+                    if b2b_res.linkedin_url and not dm.linkedin_url:
+                        dm.linkedin_url = b2b_res.linkedin_url
+            except Exception as e_b2b:
+                logger.debug("B2B waterfall lookup for %s failed: %s", dm.nome, e_b2b)
+
+        # Step B: OSINT search for direct phone, mobile, and unindexed contact points
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(key_dms), 3)) as c_exec:
             c_futs = {
                 c_exec.submit(
@@ -1155,14 +1203,15 @@ def find_decision_makers_pipeline(
                     c_res = fut.result()
                     for it in c_res.get("organic_results", []):
                         txt = f"{it.get('title', '')} {it.get('snippet', '')}"
-                        # Check for emails
+                        # Check for emails if not already validated
                         for found_em in re.findall(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b', txt):
                             found_dom = found_em.lower().split("@")[-1]
                             if corp_domain and (found_dom == corp_domain or (alt_domain and found_dom == alt_domain)):
-                                dm.email_provavel = found_em.lower()
-                                dm.status_email = "VALIDADO_OSINT"
-                                if dm.email_provavel not in dm.emails_associados:
-                                    dm.emails_associados.append(dm.email_provavel)
+                                if not dm.email_provavel:
+                                    dm.email_provavel = found_em.lower()
+                                    dm.status_email = "VALIDADO_OSINT"
+                                if found_em.lower() not in dm.emails_associados:
+                                    dm.emails_associados.append(found_em.lower())
                         # Check for direct phone / mobile
                         for found_ph in re.findall(r'\(?\d{2}\)?\s*(?:9\s*)?\d{4}[-\s]\d{4}', txt):
                             norm_ph = normalize_phone(found_ph)
@@ -1179,7 +1228,7 @@ def find_decision_makers_pipeline(
     verified_count = 0
     for dm in response.decisores:
         if corp_domain:
-            if verified_count < 8 and dm.nivel_hierarquico in ("C-Level / Sócio-Fundador", "Diretoria", "Gerência / Head") and dm.status_email != "VALIDADO_OSINT":
+            if verified_count < 8 and dm.nivel_hierarquico in ("C-Level / Sócio-Fundador", "Diretoria", "Gerência / Head") and not (dm.status_email and dm.status_email.startswith("VALIDADO_")):
                 try:
                     ver_res = find_valid_executive_email(dm.nome, corp_domain, alternate_domain=alt_domain)
                     if ver_res and ver_res.get("email"):

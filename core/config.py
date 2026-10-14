@@ -58,6 +58,16 @@ class Settings(BaseSettings):
     NOTIFICATION_PHONE: str = "5519998256557"
     EDITORIAL_WHATSAPP_RECIPIENT: str | None = None
 
+    # B2B Enrichment Waterfall APIs (Free Tier Keys)
+    APOLLO_API_KEY: str = ""
+    HUNTER_API_KEY: str = ""
+    SNOV_CLIENT_ID: str = ""
+    SNOV_CLIENT_SECRET: str = ""
+    PDL_API_KEY: str = ""
+    SALESQL_API_KEY: str = ""
+    KASPR_API_KEY: str = ""
+    LUSHA_API_KEY: str = ""
+
     # Twenty CRM
     TWENTY_CRM_URL: str = "http://twenty_server:3000/rest"
     TWENTY_CRM_TOKEN: str = ""
