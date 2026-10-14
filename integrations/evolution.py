@@ -152,10 +152,26 @@ class EvolutionClient:
             logger.debug("Evolution API sync check failed for %s: %s", norm, e)
         return {"valid": False, "exists": False, "phone": norm, "is_business": False, "name": None, "picture_url": None}
 
-    def check_whatsapp_number_sync(self, phone: str) -> bool:
-        """Synchronous check if a phone number is registered on WhatsApp."""
-        info = self.check_whatsapp_sync(phone)
-        return bool(info.get("exists", False))
+    def check_whatsapp_number_sync(self, phone: str, timeout: Optional[float] = None) -> bool:
+        """Fast synchronous check if a phone number is registered on WhatsApp."""
+        try:
+            norm = format_brazilian_phone(phone)
+        except Exception:
+            return False
+
+        url = f"{self.base_url}/chat/whatsappNumbers/{self.instance}"
+        payload = {"numbers": [norm]}
+        try:
+            req_timeout = timeout if timeout is not None else min(self.timeout, 3.0)
+            with httpx.Client(timeout=req_timeout) as client:
+                resp = client.post(url, headers=self.headers, json=payload)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    item = data[0] if isinstance(data, list) and data else {}
+                    return bool(item.get("exists", False))
+        except Exception as e:
+            logger.debug("WhatsApp fast check error for %s: %s", norm, e)
+        return False
 
     async def send_text_message(self, phone: str, text: str) -> Dict[str, Any]:
         """

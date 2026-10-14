@@ -32,6 +32,7 @@ DEFAULT_PROBE_SENDER = "contato@fernandonogueira.dev.br"
 DEFAULT_HELO_HOST = "fernandonogueira.dev.br"
 
 _cached_verifier_url: Optional[str] = None
+_domain_catch_all_cache: Dict[str, bool] = {}
 
 
 def _detect_docker_gateway() -> Optional[str]:
@@ -186,9 +187,14 @@ def _verify_email_smtp_direct(
                 rcpt_code, rcpt_msg = smtp.rcpt(clean_email)
                 is_catch = False
                 if rcpt_code == 250:
-                    rand_bogus = "probe_" + "".join(random.choices(string.ascii_lowercase + string.digits, k=10)) + f"@{domain}"
-                    catch_code, _ = smtp.rcpt(rand_bogus)
-                    is_catch = (catch_code == 250)
+                    clean_dom = domain.lower()
+                    if clean_dom in _domain_catch_all_cache:
+                        is_catch = _domain_catch_all_cache[clean_dom]
+                    else:
+                        rand_bogus = "probe_" + "".join(random.choices(string.ascii_lowercase + string.digits, k=10)) + f"@{domain}"
+                        catch_code, _ = smtp.rcpt(rand_bogus)
+                        is_catch = (catch_code == 250)
+                        _domain_catch_all_cache[clean_dom] = is_catch
 
                 smtp.quit()
 
@@ -282,6 +288,55 @@ def verify_email_smtp(
     return _verify_email_smtp_direct(email, sender, helo_host, timeout)
 
 
+def verify_emails_batch(
+    emails: List[str],
+    timeout: int = 5,
+    max_workers: int = 6,
+) -> List[Dict[str, Any]]:
+    """
+    Validates a list of emails concurrently. Uses host microservice batch endpoint
+    if running in Docker, otherwise uses local thread pool.
+    """
+    if not emails:
+        return []
+
+    clean_emails = [e.strip().lower() for e in emails if e and validate_email_syntax(str(e).strip().lower())]
+    if not clean_emails:
+        return []
+
+    svc_url = get_verifier_service_url()
+    if svc_url and os.getenv("IS_SMTP_DAEMON") != "true":
+        try:
+            payload = json.dumps({"emails": clean_emails}).encode("utf-8")
+            req = urllib.request.Request(
+                f"{svc_url}/verify-batch",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=timeout * 3) as res:
+                data = json.loads(res.read().decode("utf-8"))
+                return data.get("results", [])
+        except Exception as e:
+            logger.debug("verify-batch via service %s failed: %s; falling back to thread pool", svc_url, e)
+
+    import concurrent.futures
+    results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(clean_emails), max_workers)) as executor:
+        future_to_email = {executor.submit(verify_email_smtp, em): em for em in clean_emails}
+        for future in concurrent.futures.as_completed(future_to_email):
+            em = future_to_email[future]
+            try:
+                results.append(future.result())
+            except Exception as e:
+                results.append({
+                    "email": em,
+                    "status": "ERRO_CONEXAO",
+                    "valido": None,
+                    "detalhe": str(e),
+                })
+    return results
+
+
 def generate_corporate_email_permutations(full_name: str, domain: str) -> List[Tuple[str, str]]:
     """
     Generates an exhaustive, prioritized combinatorial list of corporate email address permutations
@@ -358,13 +413,27 @@ def _find_valid_executive_email_direct(
         candidate_patterns.extend(alt_perms[:1])
 
     best_result = None
+    all_tested: List[Dict[str, Any]] = []
 
     for cand_email, pattern_str in candidate_patterns:
         try:
             res = verify_email_smtp(cand_email, timeout=3, use_remote_daemon=False)
+            audit_entry = {
+                "email": cand_email,
+                "valido": res.get("valido"),
+                "status": res.get("status", "INCONCLUSIVO"),
+                "is_catch_all": res.get("is_catch_all", False),
+                "mx_host": res.get("mx_host"),
+                "smtp_code": res.get("smtp_code"),
+                "detalhe": res.get("detalhe", "Verificação SMTP concluída"),
+                "padrao_identificado": pattern_str,
+            }
+            all_tested.append(audit_entry)
+
             if res.get("valido") is True:
                 res["padrao_identificado"] = pattern_str
                 res["email"] = cand_email
+                res["emails_validados"] = all_tested
                 return res
             # Keep catch-all or inconclusive if better than pure invalid
             if res.get("status") in ("CATCH_ALL", "INCONCLUSIVO", "ERRO_CONEXAO"):
@@ -376,13 +445,23 @@ def _find_valid_executive_email_direct(
                 best_result = res
                 best_result["padrao_identificado"] = pattern_str
                 best_result["email"] = cand_email
-        except Exception:
-            pass
+        except Exception as e:
+            all_tested.append({
+                "email": cand_email,
+                "valido": None,
+                "status": "ERRO_CONEXAO",
+                "is_catch_all": False,
+                "mx_host": None,
+                "smtp_code": None,
+                "detalhe": f"Falha de conexão: {e}",
+                "padrao_identificado": pattern_str,
+            })
 
     # If all explicit tests were rejected or failed, provide the standard corporate pattern
     # marked as PADRAO_CORPORATIVO_ESTIMADO rather than leaving it empty
     default_email = f"{first}.{last}@{domain}"
     if best_result and best_result.get("status") in ("CATCH_ALL", "INCONCLUSIVO", "ERRO_CONEXAO"):
+        best_result["emails_validados"] = all_tested
         return best_result
 
     return {
@@ -391,6 +470,15 @@ def _find_valid_executive_email_direct(
         "valido": None,
         "padrao_identificado": "{primeiro_nome}.{sobrenome}@{dominio}",
         "detalhe": "E-mail corporativo estruturado a partir da taxonomia nominal da organização.",
+        "emails_validados": all_tested or [{
+            "email": default_email,
+            "valido": None,
+            "status": "PADRAO_CORPORATIVO_ESTIMADO",
+            "is_catch_all": False,
+            "mx_host": None,
+            "smtp_code": None,
+            "detalhe": "Padrão corporativo estimado.",
+        }],
     }
 
 
@@ -477,6 +565,10 @@ def filter_valid_emails(emails: List[str], max_to_verify: int = 10) -> List[str]
     return valid
 
 
+RAMAL_REGEX = re.compile(
+    r"(?:ramal|ramais|ext(?:ens[aã]o)?|r\.|r:|r/)(?:\s+(?:de|do|da|dos|das|[a-zA-Záéíóúãõç]{2,15})){0,3}\s*[:\-]?\s*([0-9]{1,6}(?:[,\s/e]+[0-9]{1,6})*)",
+    re.IGNORECASE,
+)
 _PHONE_DIGITS_RE = re.compile(r"\d")
 _PHONE_CLEAN_RE = re.compile(r"[\s\-\.\(\)]+")
 
@@ -484,11 +576,19 @@ _PHONE_CLEAN_RE = re.compile(r"[\s\-\.\(\)]+")
 def normalize_phone(raw: str) -> Optional[str]:
     """
     Normalizes a Brazilian phone string to (XX) XXXX-XXXX or (XX) 9XXXX-XXXX.
+    Gracefully strips extensions/ramais before extracting phone digits.
     Returns None for obviously invalid inputs.
     """
     if not raw:
         return None
-    digits = "".join(_PHONE_DIGITS_RE.findall(str(raw)))
+    # Strip ramal / extension suffix before extracting digits
+    clean_raw = re.sub(
+        r"(?:ramal|ramais|ext(?:ens[aã]o)?|r\.|r:|r/)\s*[0-9\s,/-]+",
+        "",
+        str(raw),
+        flags=re.IGNORECASE,
+    )
+    digits = "".join(_PHONE_DIGITS_RE.findall(clean_raw))
     # Strip country code 55
     if digits.startswith("55") and len(digits) in (12, 13):
         digits = digits[2:]
@@ -497,6 +597,58 @@ def normalize_phone(raw: str) -> Optional[str]:
     if len(digits) == 11:
         return f"({digits[:2]}) {digits[2:7]}-{digits[7:]}"
     return None
+
+
+def parse_phone_and_ramal(raw: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Extracts normalized phone and telephone extension (ramal) from a string.
+    Example: '(19) 3404-5000 Ramal 230' -> ('(19) 3404-5000', '230')
+    """
+    if not raw:
+        return None, None
+    raw_str = str(raw)
+    ramal_m = RAMAL_REGEX.search(raw_str)
+    ramal = ramal_m.group(1).strip() if ramal_m else None
+    norm_ph = normalize_phone(raw_str)
+    return norm_ph, ramal
+
+
+def extract_phones_and_ramais(text: str) -> Tuple[List[str], List[str]]:
+    """
+    Extracts all Brazilian phone numbers and associated telephone extensions (ramais)
+    from freeform text.
+    """
+    if not text:
+        return [], []
+    phones: List[str] = []
+    ramais: List[str] = []
+    seen_ph: set = set()
+    seen_ram: set = set()
+
+    # Match phones with optional extension suffix
+    pattern = re.compile(
+        r"(?:(?:\+55\s*)?\(?\d{2}\)?\s*(?:9\s*)?\d{4}[-\s.]?\d{4}(?:\s*(?:ramal|ramais|ext(?:ens[aã]o)?|r\.|r:|r/)\s*[0-9\s,/-]+)?)",
+        re.IGNORECASE,
+    )
+    for m in pattern.findall(text):
+        norm_ph, r_str = parse_phone_and_ramal(m)
+        if norm_ph and norm_ph not in seen_ph:
+            seen_ph.add(norm_ph)
+            phones.append(norm_ph)
+        if r_str:
+            for piece in re.findall(r"\d{1,6}", r_str):
+                if piece not in seen_ram:
+                    seen_ram.add(piece)
+                    ramais.append(piece)
+
+    for r_match in RAMAL_REGEX.finditer(text):
+        r_val = r_match.group(1)
+        for piece in re.findall(r"\d{1,6}", r_val):
+            if piece not in seen_ram:
+                seen_ram.add(piece)
+                ramais.append(piece)
+
+    return phones, ramais
 
 
 def filter_valid_phones(phones: List[str]) -> List[str]:

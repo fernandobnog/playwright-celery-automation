@@ -50,8 +50,12 @@ from integrations.email_verifier import (
     filter_valid_emails,
     filter_valid_phones,
     normalize_phone,
+    parse_phone_and_ramal,
+    extract_phones_and_ramais,
+    generate_corporate_email_permutations,
     validate_email_syntax,
     verify_email_smtp,
+    verify_emails_batch,
 )
 from integrations.rdap_client import clean_domain_for_rdap, consult_rdap_registro_br
 from integrations.b2b_waterfall import b2b_waterfall_enrich_person, hunter_domain_search
@@ -105,13 +109,24 @@ def _find_qsa_match(name: str, qsa_members: Optional[List[Dict[str, Any]]]) -> O
     return None
 
 
+_whatsapp_check_cache: Dict[str, Optional[bool]] = {}
+
+
 def _safe_check_whatsapp(phone: str) -> Optional[bool]:
-    """Safely checks if a phone number has an active WhatsApp account without throwing."""
+    """Safely checks if a phone number has an active WhatsApp account with in-memory caching."""
+    if not phone:
+        return None
     from integrations.evolution import EvolutionClient, format_brazilian_phone
     try:
         norm = format_brazilian_phone(phone)
-        evo = EvolutionClient()
-        return evo.check_whatsapp_number_sync(norm)
+        if not norm:
+            return None
+        if norm in _whatsapp_check_cache:
+            return _whatsapp_check_cache[norm]
+        evo = EvolutionClient(timeout_seconds=3.0)
+        res = evo.check_whatsapp_number_sync(norm, timeout=3.0)
+        _whatsapp_check_cache[norm] = res
+        return res
     except Exception as e:
         logger.debug("WhatsApp verification skipped or failed for %s: %s", phone, e)
         return None
@@ -399,6 +414,7 @@ def enrich_company_pipeline(
 
     site_emails = set()
     site_phones = set()
+    site_ramais = set()
 
     # --------------------------------------------------------------------------
     # Stage 2.3: Google Meu Negócio / Knowledge Panel extraction
@@ -410,9 +426,11 @@ def enrich_company_pipeline(
         kp_data = res_fiscal.get("knowledge_panel") or {}
 
     if kp_data.get("phone"):
-        norm_kp_ph = normalize_phone(kp_data["phone"])
+        norm_kp_ph, r_kp = parse_phone_and_ramal(kp_data["phone"])
         if norm_kp_ph:
             site_phones.add(norm_kp_ph)
+        if r_kp:
+            site_ramais.add(r_kp)
 
     # --------------------------------------------------------------------------
     # Stage 2.4: Registro.br RDAP Resolution (Official Domain Registry)
@@ -446,9 +464,11 @@ def enrich_company_pipeline(
                 for em in rdap_info.get("emails", []):
                     site_emails.add(em)
                 for ph in rdap_info.get("telefones", []):
-                    norm_ph = normalize_phone(ph)
+                    norm_ph, r_rdap = parse_phone_and_ramal(ph)
                     if norm_ph:
                         site_phones.add(norm_ph)
+                    if r_rdap:
+                        site_ramais.add(r_rdap)
         except Exception as e_rdap:
             logger.debug("RDAP lookup error: %s", e_rdap)
 
@@ -484,6 +504,17 @@ def enrich_company_pipeline(
         except Exception as e_dir:
             logger.warning("Directory CNPJ search fallback error: %s", e_dir)
 
+    if cnpj_registry_data:
+        for ph in cnpj_registry_data.get("telefones", []):
+            norm_ph, r_cnpj = parse_phone_and_ramal(ph)
+            if norm_ph:
+                site_phones.add(norm_ph)
+            if r_cnpj:
+                site_ramais.add(r_cnpj)
+        for em in cnpj_registry_data.get("emails", []):
+            if validate_email_syntax(em):
+                site_emails.add(em.lower())
+
     # --------------------------------------------------------------------------
     # Stage 2.7: Corporate PDF Documents OSINT (Governance, Leadership, Contacts)
     # --------------------------------------------------------------------------
@@ -504,10 +535,11 @@ def enrich_company_pipeline(
                 for em in re.findall(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b', p_txt):
                     if pdf_domain in em.lower():
                         site_emails.add(em.lower())
-                for ph in re.findall(r'\(?\d{2}\)?\s*(?:9\s*)?\d{4}[-\s]\d{4}', p_txt):
-                    norm_ph = normalize_phone(ph)
-                    if norm_ph:
-                        site_phones.add(norm_ph)
+                p_phones, p_ramais = extract_phones_and_ramais(p_txt)
+                for ph in p_phones:
+                    site_phones.add(ph)
+                for r in p_ramais:
+                    site_ramais.add(r)
         except Exception as e_pdf:
             logger.debug("PDF dorking error: %s", e_pdf)
 
@@ -554,9 +586,11 @@ def enrich_company_pipeline(
                 if not any(ign in em.lower() for ign in ["example.com", "wix.com", "domain.com", ".png", ".jpg", ".webp"]):
                     site_emails.add(em.lower())
 
-            for ph in re.findall(r'\(?\d{2}\)?\s*(?:9\s*)?\d{4}[-\s]\d{4}', raw_text):
-                if not ph.startswith("(00") and not ph.startswith("(99"):
-                    site_phones.add(ph.strip())
+            clean_phones, clean_ramais = extract_phones_and_ramais(raw_text)
+            for ph in clean_phones:
+                site_phones.add(ph)
+            for r in clean_ramais:
+                site_ramais.add(r)
 
             # Fetch raw homepage HTML to capture footer, tel:, mailto: and whatsapp links
             base_url = f"{urlparse(official_website_url).scheme}://{urlparse(official_website_url).netloc}"
@@ -580,10 +614,11 @@ def enrich_company_pipeline(
                             norm_w = normalize_phone(w)
                             if norm_w:
                                 site_phones.add(norm_w)
-                        for ph in re.findall(r'\(?\d{2}\)?\s*(?:9\s*)?\d{4}[-\s]\d{4}', home_html):
-                            norm_ph = normalize_phone(ph)
-                            if norm_ph:
-                                site_phones.add(norm_ph)
+                        h_phones, h_ramais = extract_phones_and_ramais(home_html)
+                        for ph in h_phones:
+                            site_phones.add(ph)
+                        for r in h_ramais:
+                            site_ramais.add(r)
 
                     # Scan contact, leadership and governance pages
                     contact_paths = [
@@ -609,10 +644,11 @@ def enrich_company_pipeline(
                                     norm_w = normalize_phone(w)
                                     if norm_w:
                                         site_phones.add(norm_w)
-                                for ph in re.findall(r'\(?\d{2}\)?\s*(?:9\s*)?\d{4}[-\s]\d{4}', c_html):
-                                    norm_ph = normalize_phone(ph)
-                                    if norm_ph:
-                                        site_phones.add(norm_ph)
+                                c_phones, c_ramais = extract_phones_and_ramais(c_html)
+                                for ph in c_phones:
+                                    site_phones.add(ph)
+                                for r in c_ramais:
+                                    site_ramais.add(r)
                         except Exception:
                             continue
             except Exception as e_crawl:
@@ -756,6 +792,15 @@ def enrich_company_pipeline(
         enriched_response.presenca_digital.telefones
     )
 
+    # Populate ramais in presenca_digital and dados_cadastrais
+    all_discovered_ramais = list(dict.fromkeys(
+        enriched_response.presenca_digital.ramais + list(site_ramais)
+    ))
+    enriched_response.presenca_digital.ramais = all_discovered_ramais
+    enriched_response.dados_cadastrais.ramais = all_discovered_ramais
+    if cnpj_registry_data and cnpj_registry_data.get("telefones"):
+        enriched_response.dados_cadastrais.telefones = cnpj_registry_data.get("telefones", [])
+
     # Collect all candidate emails (including user-provided emails) and SMTP-validate them
     all_candidate_emails = list(dict.fromkeys(
         enriched_response.presenca_digital.emails + list(site_emails) + list(request.emails)
@@ -889,6 +934,7 @@ def find_decision_makers_pipeline(
     qsa_members: Optional[List[Dict[str, Any]]] = None,
     company_phones: Optional[List[str]] = None,
     company_emails: Optional[List[str]] = None,
+    company_ramais: Optional[List[str]] = None,
     legal_representative: Optional[str] = None,
 ) -> DecisionMakersResponse:
     """
@@ -1197,43 +1243,157 @@ def find_decision_makers_pipeline(
             except Exception as e_c_osint:
                 logger.debug("OSINT contact lookup for %s failed: %s", top_dm.nome, e_c_osint)
 
-    # 4.3 Email generation and SMTP verification for top decision makers
-    verified_count = 0
-    for dm in response.decisores:
-        if corp_domain:
-            if verified_count < 2 and dm.nivel_hierarquico in ("C-Level / Sócio-Fundador", "Diretoria") and not (dm.status_email and dm.status_email.startswith("VALIDADO_")):
-                try:
-                    ver_res = find_valid_executive_email(dm.nome, corp_domain, alternate_domain=alt_domain)
-                    if ver_res and ver_res.get("email"):
-                        dm.email_provavel = ver_res.get("email")
-                        dm.padrao_email = ver_res.get("padrao_identificado", f"{{nome}}.{{sobrenome}}@{corp_domain}")
-                        dm.status_email = ver_res.get("status", "PADRAO_CORPORATIVO_ESTIMADO")
-                        verified_count += 1
-                        continue
-                except Exception as e_ver:
-                    logger.debug("Active SMTP check skipped for %s: %s", dm.nome, e_ver)
+    # 4.3 Active Email Generation, SMTP Validation, and Phone/Ramal Consolidation for ALL Decision Makers
+    clean_company_phones = [normalize_phone(p) for p in (company_phones or []) if normalize_phone(p)]
+    clean_company_ramais = list(dict.fromkeys(company_ramais or []))
+    if not clean_company_phones or not clean_company_ramais:
+        all_snip = " ".join([f"{it.get('title', '')} {it.get('snippet', '')}" for it in collected_results])
+        s_phones, s_ramais = extract_phones_and_ramais(all_snip)
+        if not clean_company_phones:
+            clean_company_phones = s_phones
+        if not clean_company_ramais:
+            clean_company_ramais = s_ramais
 
-            # Heuristic calculation for remaining profiles or when SMTP was skipped
+    def _enrich_single_dm(dm: DecisionMakerProfile) -> DecisionMakerProfile:
+        dm.emails_validados = dm.emails_validados or []
+        prior_status = dm.status_email
+
+        # 1. Check if email was already verified with high confidence (e.g. B2B waterfall: VALIDADO_APOLLO, VALIDADO_HUNTER, etc.)
+        is_already_b2b_validated = bool(
+            prior_status and prior_status.startswith("VALIDADO_") and prior_status not in ("VALIDADO_SMTP", "VALIDADO_OSINT")
+        )
+
+        if is_already_b2b_validated:
+            # Preserve provider status and record in emails_validados without calling find_valid_executive_email
+            if dm.email_provavel:
+                if not any(ev.get("email") == dm.email_provavel for ev in dm.emails_validados):
+                    dm.emails_validados.append({
+                        "email": dm.email_provavel,
+                        "valido": True,
+                        "status": dm.status_email,
+                        "is_catch_all": False,
+                        "mx_host": "b2b_provider",
+                        "smtp_code": 250,
+                        "detalhe": f"E-mail pré-validado via inteligência B2B ({dm.status_email}).",
+                    })
+        else:
+            # Call find_valid_executive_email for corporate email resolution and SMTP probing
+            if corp_domain:
+                res_exec = find_valid_executive_email(dm.nome, corp_domain, alternate_domain=alt_domain)
+                if res_exec and isinstance(res_exec, dict):
+                    if res_exec.get("email"):
+                        dm.email_provavel = res_exec["email"]
+                    if res_exec.get("status"):
+                        dm.status_email = res_exec["status"]
+                    if res_exec.get("padrao_identificado"):
+                        dm.padrao_email = res_exec["padrao_identificado"]
+
+                    # Ingest tested emails if returned
+                    if "emails_validados" in res_exec and isinstance(res_exec["emails_validados"], list):
+                        for ev in res_exec["emails_validados"]:
+                            if ev.get("email") and not any(x.get("email") == ev.get("email") for x in dm.emails_validados):
+                                dm.emails_validados.append(ev)
+                    elif res_exec.get("email") and not any(x.get("email") == res_exec.get("email") for x in dm.emails_validados):
+                        dm.emails_validados.append({
+                            "email": res_exec.get("email"),
+                            "valido": res_exec.get("valido"),
+                            "status": res_exec.get("status", "INCONCLUSIVO"),
+                            "is_catch_all": res_exec.get("is_catch_all", False),
+                            "mx_host": res_exec.get("mx_host"),
+                            "smtp_code": res_exec.get("smtp_code"),
+                            "detalhe": res_exec.get("detalhe", "Verificação corporativa SMTP."),
+                        })
+
+            # Derive fallback pattern if email_provavel is still not set
             if not dm.email_provavel:
                 clean_name = unicodedata.normalize('NFKD', dm.nome).encode('ascii', 'ignore').decode('utf-8').lower()
                 parts = [p for p in re.sub(r'[^a-z\s]', '', clean_name).split() if len(p) > 1]
-                if len(parts) >= 2:
-                    first = parts[0]
-                    last = parts[-1]
-                    dm.email_provavel = f"{first}.{last}@{corp_domain}"
-                    dm.padrao_email = f"{{nome}}.{{sobrenome}}@{corp_domain}"
-                    dm.status_email = "PADRAO_CORPORATIVO_ESTIMADO"
-                elif len(parts) == 1:
-                    dm.email_provavel = f"{parts[0]}@{corp_domain}"
-                    dm.padrao_email = f"{{nome}}@{corp_domain}"
-                    dm.status_email = "PADRAO_CORPORATIVO_ESTIMADO"
+                default_formula = f"{parts[0]}.{parts[-1]}@{corp_domain}" if len(parts) >= 2 else (f"{parts[0]}@{corp_domain}" if parts else f"contato@{corp_domain or 'empresa.com.br'}")
+                dm.email_provavel = default_formula
+                dm.status_email = "PADRAO_CORPORATIVO_ESTIMADO"
+
+            if corp_domain and not dm.padrao_email:
+                dm.padrao_email = f"{{nome}}.{{sobrenome}}@{corp_domain}"
+
+        # 2. Gather all associated candidate emails (deduplicated)
+        all_assoc_emails = []
+        if dm.email_provavel:
+            all_assoc_emails.append(dm.email_provavel.strip().lower())
+        for em in dm.emails_associados:
+            c_em = em.strip().lower()
+            if c_em and c_em not in all_assoc_emails:
+                all_assoc_emails.append(c_em)
+        for ev in dm.emails_validados:
+            c_em = ev.get("email", "").strip().lower()
+            if c_em and c_em not in all_assoc_emails:
+                all_assoc_emails.append(c_em)
+
+        # Validate any unvalidated candidate emails individually via verify_email_smtp
+        unvalidated = [
+            e for e in all_assoc_emails
+            if validate_email_syntax(e) and not any(ev.get("email") == e for ev in dm.emails_validados)
+        ]
+        if unvalidated:
+            for em_unv in unvalidated:
+                try:
+                    res_v = verify_email_smtp(em_unv, timeout=3)
+                    if isinstance(res_v, dict):
+                        dm.emails_validados.append({
+                            "email": em_unv,
+                            "valido": res_v.get("valido"),
+                            "status": res_v.get("status", "INCONCLUSIVO"),
+                            "is_catch_all": res_v.get("is_catch_all", False),
+                            "mx_host": res_v.get("mx_host"),
+                            "smtp_code": res_v.get("smtp_code"),
+                            "detalhe": res_v.get("detalhe", "Validação SMTP individual."),
+                        })
+                except Exception as e_v:
+                    logger.debug("Verification error for %s: %s", em_unv, e_v)
+
+        dm.emails_associados = list(dict.fromkeys(all_assoc_emails))
+
+        # 3. Consolidate phones and extensions (ramais)
+        clean_d_phones = []
+        if dm.telefone_contato:
+            norm_c, r_c = parse_phone_and_ramal(dm.telefone_contato)
+            if r_c and not dm.ramal:
+                dm.ramal = r_c
+            if norm_c:
+                dm.telefone_contato = norm_c
+                clean_d_phones.append(norm_c)
+                dm.whatsapp_valido = _safe_check_whatsapp(norm_c)
+
+        for ph in dm.telefones_associados:
+            norm_p, r_p = parse_phone_and_ramal(ph)
+            if r_p and not dm.ramal:
+                dm.ramal = r_p
+            if norm_p and norm_p not in clean_d_phones:
+                clean_d_phones.append(norm_p)
+
+        # Fallback to company institutional phones if executive lacks personal phone
+        if not dm.telefone_contato and clean_company_phones:
+            primary_c_phone = clean_company_phones[0]
+            if clean_company_ramais:
+                dm.telefone_contato = f"{primary_c_phone} Ramal {clean_company_ramais[0]}"
+                if not dm.ramal:
+                    dm.ramal = clean_company_ramais[0]
+            else:
+                dm.telefone_contato = primary_c_phone
+            dm.whatsapp_valido = _safe_check_whatsapp(primary_c_phone)
+
+        for c_ph in clean_company_phones:
+            if c_ph not in clean_d_phones:
+                clean_d_phones.append(c_ph)
+
+        dm.telefones_associados = clean_d_phones
+        dm.ramais_empresa = list(clean_company_ramais)
+        return dm
+
+    if response.decisores:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(response.decisores), 6)) as dm_executor:
+            response.decisores = list(dm_executor.map(_enrich_single_dm, response.decisores))
 
     response.company_name = company_name
-
-    # Ensure no email is left empty if an estimated corporate pattern was derived
-    for dm in response.decisores:
-        if dm.status_email == "INVALIDO":
-            dm.status_email = "PADRAO_CORPORATIVO_ESTIMADO"
 
     # 4.4 Reconcile user-provided target_people and official QSA members
     for p_name in request.target_people:
@@ -1392,6 +1552,7 @@ def enrich_full_company_pipeline(
         qsa_members=comp_res.dados_cadastrais.qsa,
         company_phones=comp_res.presenca_digital.telefones,
         company_emails=comp_res.presenca_digital.emails,
+        company_ramais=comp_res.presenca_digital.ramais,
         legal_representative=comp_res.dados_cadastrais.representante_legal,
     )
 
@@ -1575,6 +1736,7 @@ def enrich_unified_pipeline(
         qsa_members=comp_res.dados_cadastrais.qsa,
         company_phones=comp_res.presenca_digital.telefones,
         company_emails=comp_res.presenca_digital.emails,
+        company_ramais=comp_res.presenca_digital.ramais,
         legal_representative=comp_res.dados_cadastrais.representante_legal,
     )
 
@@ -1585,6 +1747,17 @@ def enrich_unified_pipeline(
     all_phones_to_audit = list(dict.fromkeys(request.phones + comp_res.presenca_digital.telefones))
     phones_audit_data = audit_phones_batch(all_phones_to_audit)
 
+    # Merge individual decision makers email validation records into consolidated contact audit
+    dm_audit_records = []
+    for dm in dm_res.decisores:
+        dm_audit_records.extend(dm.emails_validados)
+    all_audited = list(emails_audit_data)
+    seen_audit = {item.get("email") for item in all_audited if isinstance(item, dict)}
+    for rec in dm_audit_records:
+        if rec.get("email") and rec.get("email") not in seen_audit:
+            seen_audit.add(rec.get("email"))
+            all_audited.append(rec)
+
     user_enriched_profiles = [
         dm for dm in dm_res.decisores
         if dm.origem_dado == "ENVIADO_PELO_USUARIO" or any(_match_person_name(dm.nome, p) for p in request.people)
@@ -1592,11 +1765,12 @@ def enrich_unified_pipeline(
 
     auditoria_contatos = {
         "padrao_email_detectado": detected_pattern,
-        "emails_auditados": emails_audit_data,
+        "emails_auditados": all_audited,
         "telefones_auditados": phones_audit_data,
         "total_pessoas_enviadas": len(request.people),
         "total_emails_enviados": len(request.emails),
         "total_telefones_enviados": len(request.phones),
+        "ramais_identificados": comp_res.presenca_digital.ramais,
     }
 
     elapsed = round(time.time() - start_time, 2)
@@ -1612,6 +1786,7 @@ def enrich_unified_pipeline(
             sede=comp_res.dados_cadastrais.sede_localizacao,
             website_oficial=comp_res.presenca_digital.website_oficial,
             telefones=comp_res.presenca_digital.telefones,
+            ramais=comp_res.presenca_digital.ramais,
             emails=comp_res.presenca_digital.emails,
             whatsapp_comercial=comp_res.presenca_digital.whatsapp_comercial,
             representante_legal=comp_res.dados_cadastrais.representante_legal,

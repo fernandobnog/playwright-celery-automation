@@ -61,9 +61,9 @@ TOOLS = [
         "description": (
             "Enriquece uma empresa a partir do nome utilizando IA (Gemini), Google Search e LinkedIn. "
             "Retorna: (1) Dados cadastrais oficiais da Receita (Razão Social, CNPJ formatado, Situação Cadastral, Sede), "
-            "(2) Website oficial, e-mails, telefones e portfólio de produtos/serviços, "
+            "(2) Website oficial, e-mails, telefones, ramais corporativos e portfólio de produtos/serviços, "
             "(3) Perfil corporativo da empresa no LinkedIn (slogan, faixa de colaboradores, ano de fundação, especialidades e vagas em aberto), "
-            "(4) Lista de tomadores de decisão (Sócios, C-Level, Diretores, Heads) com links do LinkedIn e checagem de vínculo atual, "
+            "(4) Lista de tomadores de decisão (Sócios, C-Level, Diretores, Heads) com links do LinkedIn, lista de e-mails de cada um com teste e validação ativa por SMTP individual (emails_validados, status_email, mx_host), telefones diretos e corporativos com ramais (telefones_associados, ramal, ramais_empresa) e checagem de WhatsApp, "
             "(5) Diagnóstico de mercado, dor resolvida, sugestão prática de pitch comercial e recomendação de melhor contato."
         ),
         "inputSchema": {
@@ -107,7 +107,7 @@ TOOLS = [
         "description": (
             "Busca profissionais em cargos de gestão e tomada de decisão (Sócios, C-Level, Diretores, Heads) "
             "no LinkedIn para uma empresa específica via Google Dorking anônimo e auditoria de vínculo por IA. "
-            "Retorna nomes, cargos atuais, níveis hierárquicos, departamento, links de perfil e análise de melhor ponto de abordagem."
+            "Retorna para cada gestor: lista completa de emails (emails_associados), status de validação ativa SMTP individual para cada endereço testado (emails_validados com servidor MX e entregabilidade), telefones diretos ou corporativos (telefones_associados), ramal interno (ramal) e ramais corporativos (ramais_empresa), validação de WhatsApp, cargo e melhor abordagem comercial."
         ),
         "inputSchema": {
             "type": "object",

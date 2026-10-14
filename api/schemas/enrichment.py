@@ -80,6 +80,8 @@ class CadastralData(BaseModel):
     sede_localizacao: Optional[str] = Field(default=None, description="Cidade, Estado ou endereço da matriz")
     qsa: List[Dict[str, Any]] = Field(default_factory=list, description="Quadro de Sócios e Administradores (QSA)")
     representante_legal: Optional[str] = Field(default=None, description="Representante legal registrado no domínio ou órgãos públicos")
+    telefones: List[str] = Field(default_factory=list, description="Telefones oficiais cadastrados na Receita Federal")
+    ramais: List[str] = Field(default_factory=list, description="Ramais telefônicos cadastrais")
 
 
 class DigitalPresence(BaseModel):
@@ -87,6 +89,7 @@ class DigitalPresence(BaseModel):
     website_oficial: Optional[str] = Field(default=None, description="URL limpa do site oficial da empresa")
     linkedin_url: Optional[str] = Field(default=None, description="URL da Company Page no LinkedIn")
     telefones: List[str] = Field(default_factory=list, description="Telefones institucionais ou de atendimento")
+    ramais: List[str] = Field(default_factory=list, description="Ramais telefônicos corporativos identificados")
     emails: List[str] = Field(default_factory=list, description="E-mails corporativos (contato, comercial, etc.)")
     outras_redes: List[str] = Field(default_factory=list, description="Outros links (Instagram, YouTube, etc.)")
     whatsapp_comercial: Optional[str] = Field(default=None, description="Número de WhatsApp verificado para contato comercial")
@@ -260,6 +263,18 @@ class DecisionMakerProfile(BaseModel):
     telefones_associados: List[str] = Field(
         default_factory=list,
         description="Lista de telefones ou WhatsApp associados ao decisor",
+    )
+    ramal: Optional[str] = Field(
+        default=None,
+        description="Ramal telefônico interno direto do executivo (se identificado)",
+    )
+    ramais_empresa: List[str] = Field(
+        default_factory=list,
+        description="Ramais telefônicos corporativos conhecidos da empresa",
+    )
+    emails_validados: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Auditoria técnica de cada e-mail candidate com resultado SMTP, entregabilidade e servidor MX",
     )
 
 
@@ -521,6 +536,7 @@ class GoogleEnrichmentData(BaseModel):
     sede: Optional[str] = None
     website_oficial: Optional[str] = None
     telefones: List[str] = Field(default_factory=list)
+    ramais: List[str] = Field(default_factory=list, description="Ramais telefônicos corporativos identificados")
     emails: List[str] = Field(default_factory=list)
     whatsapp_comercial: Optional[str] = None
     representante_legal: Optional[str] = None

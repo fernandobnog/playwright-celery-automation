@@ -10,7 +10,8 @@ import logging
 import os
 import sys
 import time
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import concurrent.futures
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
 # Ensure integrations module can be imported
@@ -93,6 +94,36 @@ class SMTPVerifierHandler(BaseHTTPRequestHandler):
             self._send_json(200, result)
             return
 
+        if path == "/verify-batch":
+            raw_emails = payload.get("emails", [])
+            if not isinstance(raw_emails, list):
+                self._send_json(400, {"error": "Campo 'emails' deve ser uma lista no body JSON."})
+                return
+            t0 = time.time()
+            clean_list = [str(e).strip().lower() for e in raw_emails if e and str(e).strip()]
+            results = []
+            if clean_list:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(clean_list), 8)) as executor:
+                    future_to_email = {executor.submit(verify_email_smtp, em): em for em in clean_list}
+                    for future in concurrent.futures.as_completed(future_to_email):
+                        em = future_to_email[future]
+                        try:
+                            res = future.result()
+                            results.append(res)
+                        except Exception as exc:
+                            results.append({
+                                "email": em,
+                                "status": "ERRO_CONEXAO",
+                                "valido": None,
+                                "detalhe": f"Falha na execução: {exc}",
+                            })
+            self._send_json(200, {
+                "results": results,
+                "total": len(results),
+                "execution_time_seconds": round(time.time() - t0, 3),
+            })
+            return
+
         if path == "/find-executive":
             name = payload.get("name") or payload.get("nome")
             domain = payload.get("domain") or payload.get("dominio")
@@ -111,8 +142,8 @@ class SMTPVerifierHandler(BaseHTTPRequestHandler):
 
 def run_daemon():
     server_address = (HOST, PORT)
-    httpd = HTTPServer(server_address, SMTPVerifierHandler)
-    logger.info("SMTP Verifier Daemon listening on %s:%d", HOST, PORT)
+    httpd = ThreadingHTTPServer(server_address, SMTPVerifierHandler)
+    logger.info("SMTP Verifier Daemon (multithreaded) listening on %s:%d", HOST, PORT)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
