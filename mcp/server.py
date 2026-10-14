@@ -314,7 +314,7 @@ def handle_tools_call(req_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 "phones": args.get("phones"),
                 "contacts": args.get("contacts"),
             }
-            res = _http_request("/api/v1/enrich", method="POST", data=payload, timeout=240)
+            res = _http_request("/api/v1/enrich", method="POST", data=payload, timeout=300)
 
         elif tool_name == "find_decision_makers":
             company_name = args.get("company_name") or args.get("name")
@@ -328,7 +328,7 @@ def handle_tools_call(req_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
                 "emails": args.get("emails") or args.get("provided_emails"),
                 "phones": args.get("phones") or args.get("provided_phones"),
             }
-            res = _http_request("/api/v1/enrich/decision-makers", method="POST", data=payload, timeout=180)
+            res = _http_request("/api/v1/enrich/decision-makers", method="POST", data=payload, timeout=300)
 
         elif tool_name == "get_linkedin_company_profile":
             name = args.get("name") or args.get("company_name")

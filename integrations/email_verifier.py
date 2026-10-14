@@ -350,14 +350,18 @@ def _find_valid_executive_email_direct(
         domains_to_try.append(alternate_domain)
 
     candidate_patterns: List[Tuple[str, str]] = []
-    for d in domains_to_try:
-        candidate_patterns.extend(generate_corporate_email_permutations(full_name, d))
+    # Test top 3 most common corporate permutations on primary domain
+    primary_perms = generate_corporate_email_permutations(full_name, domain)
+    candidate_patterns.extend(primary_perms[:3])
+    if alternate_domain and alternate_domain != domain:
+        alt_perms = generate_corporate_email_permutations(full_name, alternate_domain)
+        candidate_patterns.extend(alt_perms[:1])
 
     best_result = None
 
     for cand_email, pattern_str in candidate_patterns:
         try:
-            res = verify_email_smtp(cand_email, use_remote_daemon=False)
+            res = verify_email_smtp(cand_email, timeout=3, use_remote_daemon=False)
             if res.get("valido") is True:
                 res["padrao_identificado"] = pattern_str
                 res["email"] = cand_email

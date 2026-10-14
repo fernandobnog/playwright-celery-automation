@@ -286,9 +286,9 @@ def execute_google_search(query: str, num_results: int = 10) -> dict:
         from flows.tasks_google_search import task_google_search
         async_task = task_google_search.apply_async(
             kwargs={"query": query, "num_results": num_results},
-            expires=40,
+            expires=50,
         )
-        data = async_task.get(timeout=35)
+        data = async_task.get(timeout=45)
         if data and isinstance(data, dict):
             logger.info("Celery google search succeeded for '%s' (results=%d)", query[:40], len(data.get("organic_results", [])))
             return data
@@ -962,11 +962,9 @@ def find_decision_makers_pipeline(
                 except Exception as e_p:
                     logger.debug("Target person search error for %s: %s", p_name, e_p)
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         f_c = executor.submit(execute_google_search, plan.query_c_level, request.max_results)
         f_dh = executor.submit(execute_google_search, plan.query_directors_heads, request.max_results)
-        f_news = executor.submit(execute_google_search, query_news, 4)
-        f_lead = executor.submit(execute_google_search, query_leadership, 4)
 
         try:
             res_c = f_c.result()
@@ -988,25 +986,17 @@ def find_decision_makers_pipeline(
         except Exception as e_dh:
             logger.warning("Directors/Heads search failed: %s", e_dh)
 
+    # If primary LinkedIn queries returned fewer than 3 profiles, query news/governance as backup
+    if len(collected_results) < 3:
         try:
-            res_news = f_news.result()
+            res_news = execute_google_search(query_news, 4)
             for item in res_news.get("organic_results", []):
                 u = item.get("url", "")
                 if u not in seen_urls:
                     seen_urls.add(u)
                     collected_results.append(item)
         except Exception as e_news:
-            logger.warning("News search failed: %s", e_news)
-
-        try:
-            res_lead = f_lead.result()
-            for item in res_lead.get("organic_results", []):
-                u = item.get("url", "")
-                if u not in seen_urls:
-                    seen_urls.add(u)
-                    collected_results.append(item)
-        except Exception as e_lead:
-            logger.debug("Leadership search failed: %s", e_lead)
+            logger.debug("News fallback search failed: %s", e_news)
 
     # 3. AI synthesis of structured decision makers
     evidence_lines = []
@@ -1125,38 +1115,28 @@ def find_decision_makers_pipeline(
         elif corp_domain.endswith(".com"):
             alt_domain = f"{clean_company_slug}.com.br"
 
-    # 4.1 Discover missing LinkedIn URLs for top executives & QSA members
+    # 4.1 Discover missing LinkedIn URL for top executive if missing
     missing_linkedin_dms = [
         dm for dm in response.decisores
         if not dm.linkedin_url and (dm.pertence_ao_qsa or dm.nivel_hierarquico in ("C-Level / Sócio-Fundador", "Diretoria"))
-    ][:5]
-    if missing_linkedin_dms:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(missing_linkedin_dms), 3)) as l_exec:
-            l_futs = {
-                l_exec.submit(
-                    execute_google_search,
-                    f'site:linkedin.com/in "{dm.nome}" "{company_name}"',
-                    2
-                ): dm
-                for dm in missing_linkedin_dms
-            }
-            for fut in concurrent.futures.as_completed(l_futs):
-                dm = l_futs[fut]
-                try:
-                    res_l = fut.result()
-                    for it in res_l.get("organic_results", []):
-                        u = it.get("url", "")
-                        if "linkedin.com/in/" in u:
-                            dm.linkedin_url = u
-                            break
-                except Exception as e_l:
-                    logger.debug("LinkedIn lookup for %s failed: %s", dm.nome, e_l)
+    ]
+    if missing_linkedin_dms and len(response.decisores) <= 3:
+        top_missing = missing_linkedin_dms[0]
+        try:
+            res_l = execute_google_search(f'site:linkedin.com/in "{top_missing.nome}" "{company_name}"', 2)
+            for it in res_l.get("organic_results", []):
+                u = it.get("url", "")
+                if "linkedin.com/in/" in u:
+                    top_missing.linkedin_url = u
+                    break
+        except Exception as e_l:
+            logger.debug("LinkedIn lookup for %s failed: %s", top_missing.nome, e_l)
 
     # 4.2 Active B2B Waterfall & OSINT contact lookup (emails, direct phones, mobile) for top decision makers
     key_dms = [
         dm for dm in response.decisores
         if dm.nivel_hierarquico in ("C-Level / Sócio-Fundador", "Diretoria")
-    ][:4]
+    ][:3]
     if key_dms:
         # Step A: B2B Intelligence Waterfall (Apollo -> Hunter -> Snov -> PDL -> Kaspr -> Lusha -> SalesQL)
         for dm in key_dms:
@@ -1187,48 +1167,41 @@ def find_decision_makers_pipeline(
             except Exception as e_b2b:
                 logger.debug("B2B waterfall lookup for %s failed: %s", dm.nome, e_b2b)
 
-        # Step B: OSINT search for direct phone, mobile, and unindexed contact points
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(key_dms), 3)) as c_exec:
-            c_futs = {
-                c_exec.submit(
-                    execute_google_search,
-                    f'"{dm.nome}" "{company_name}" (email OR contato OR telefone OR celular OR whatsapp)',
+        # Step B: Targeted OSINT search for direct phone/mobile if top executive still lacks contacts
+        dms_needing_contacts = [dm for dm in key_dms if not dm.telefone_contato or not dm.email_provavel]
+        if dms_needing_contacts:
+            top_dm = dms_needing_contacts[0]
+            try:
+                c_res = execute_google_search(
+                    f'"{top_dm.nome}" "{company_name}" (email OR contato OR telefone OR celular OR whatsapp)',
                     3
-                ): dm
-                for dm in key_dms
-            }
-            for fut in concurrent.futures.as_completed(c_futs):
-                dm = c_futs[fut]
-                try:
-                    c_res = fut.result()
-                    for it in c_res.get("organic_results", []):
-                        txt = f"{it.get('title', '')} {it.get('snippet', '')}"
-                        # Check for emails if not already validated
-                        for found_em in re.findall(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b', txt):
-                            found_dom = found_em.lower().split("@")[-1]
-                            if corp_domain and (found_dom == corp_domain or (alt_domain and found_dom == alt_domain)):
-                                if not dm.email_provavel:
-                                    dm.email_provavel = found_em.lower()
-                                    dm.status_email = "VALIDADO_OSINT"
-                                if found_em.lower() not in dm.emails_associados:
-                                    dm.emails_associados.append(found_em.lower())
-                        # Check for direct phone / mobile
-                        for found_ph in re.findall(r'\(?\d{2}\)?\s*(?:9\s*)?\d{4}[-\s]\d{4}', txt):
-                            norm_ph = normalize_phone(found_ph)
-                            if norm_ph and not norm_ph.startswith("(00") and not norm_ph.startswith("(99"):
-                                if not dm.telefone_contato:
-                                    dm.telefone_contato = norm_ph
-                                    dm.whatsapp_valido = _safe_check_whatsapp(norm_ph)
-                                if norm_ph not in dm.telefones_associados:
-                                    dm.telefones_associados.append(norm_ph)
-                except Exception as e_c_osint:
-                    logger.debug("OSINT contact lookup for %s failed: %s", dm.nome, e_c_osint)
+                )
+                for it in c_res.get("organic_results", []):
+                    txt = f"{it.get('title', '')} {it.get('snippet', '')}"
+                    for found_em in re.findall(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b', txt):
+                        found_dom = found_em.lower().split("@")[-1]
+                        if corp_domain and (found_dom == corp_domain or (alt_domain and found_dom == alt_domain)):
+                            if not top_dm.email_provavel:
+                                top_dm.email_provavel = found_em.lower()
+                                top_dm.status_email = "VALIDADO_OSINT"
+                            if found_em.lower() not in top_dm.emails_associados:
+                                top_dm.emails_associados.append(found_em.lower())
+                    for found_ph in re.findall(r'\(?\d{2}\)?\s*(?:9\s*)?\d{4}[-\s]\d{4}', txt):
+                        norm_ph = normalize_phone(found_ph)
+                        if norm_ph and not norm_ph.startswith("(00") and not norm_ph.startswith("(99"):
+                            if not top_dm.telefone_contato:
+                                top_dm.telefone_contato = norm_ph
+                                top_dm.whatsapp_valido = _safe_check_whatsapp(norm_ph)
+                            if norm_ph not in top_dm.telefones_associados:
+                                top_dm.telefones_associados.append(norm_ph)
+            except Exception as e_c_osint:
+                logger.debug("OSINT contact lookup for %s failed: %s", top_dm.nome, e_c_osint)
 
-    # 4.3 Email generation and SMTP verification for all decision makers
+    # 4.3 Email generation and SMTP verification for top decision makers
     verified_count = 0
     for dm in response.decisores:
         if corp_domain:
-            if verified_count < 8 and dm.nivel_hierarquico in ("C-Level / Sócio-Fundador", "Diretoria", "Gerência / Head") and not (dm.status_email and dm.status_email.startswith("VALIDADO_")):
+            if verified_count < 2 and dm.nivel_hierarquico in ("C-Level / Sócio-Fundador", "Diretoria") and not (dm.status_email and dm.status_email.startswith("VALIDADO_")):
                 try:
                     ver_res = find_valid_executive_email(dm.nome, corp_domain, alternate_domain=alt_domain)
                     if ver_res and ver_res.get("email"):
