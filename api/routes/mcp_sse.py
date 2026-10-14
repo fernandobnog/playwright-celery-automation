@@ -20,6 +20,7 @@ Features:
 import asyncio
 import json
 import logging
+import urllib.parse
 import uuid
 from typing import Dict, Optional
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response
@@ -105,7 +106,14 @@ async def mcp_get_endpoint(
     forwarded_proto = request.headers.get("x-forwarded-proto") or request.url.scheme or "http"
     forwarded_host = request.headers.get("x-forwarded-host") or request.headers.get("host") or "api.fernandonogueira.dev.br"
     base_url = f"{forwarded_proto}://{forwarded_host}".rstrip("/")
+    incoming_api_key = (
+        request.query_params.get("api_key")
+        or request.headers.get("x-api-key")
+        or request.query_params.get("apiKey")
+    )
     post_endpoint = f"{base_url}/mcp/messages?session_id={sid}"
+    if incoming_api_key:
+        post_endpoint += f"&api_key={urllib.parse.quote(incoming_api_key)}"
 
     logger.info("New MCP SSE client connected. Session ID: %s | Post URL: %s", sid, post_endpoint)
 

@@ -56,9 +56,12 @@ def enrich_unified_post(payload: QuickEnrichRequest):
 @router.get("", response_model=UnifiedEnrichmentResponse)
 @router.get("/", response_model=UnifiedEnrichmentResponse)
 def enrich_unified_get(
-    name: str = Query(..., min_length=1, max_length=200, description="Nome da empresa a enriquecer"),
+    name: Optional[str] = Query(None, min_length=1, max_length=200, description="Nome da empresa a enriquecer"),
+    company_name: Optional[str] = Query(None, min_length=1, max_length=200, description="Alias para name"),
     location: Optional[str] = Query(None, description="Cidade ou Estado para desambiguação"),
-    deep_scrape: bool = Query(True, description="Análise profunda do site oficial"),
+    location_hint: Optional[str] = Query(None, description="Alias para location"),
+    deep_scrape: Optional[bool] = Query(None, description="Análise profunda do site oficial"),
+    deep_scrape_website: Optional[bool] = Query(None, description="Alias para deep_scrape"),
     people: Optional[str] = Query(None, description="Pessoas ou executivos separados por vírgula"),
     emails: Optional[str] = Query(None, description="E-mails corporativos ou pessoais separados por vírgula"),
     phones: Optional[str] = Query(None, description="Telefones separados por vírgula"),
@@ -67,10 +70,15 @@ def enrich_unified_get(
     Versão GET do enriquecimento unificado (Google + LinkedIn) via query string.
     Exemplo: /api/v1/enrich?name=Matera&location=Campinas&people=Carlos+Netto&emails=contato@matera.com
     """
+    resolved_name = name or company_name
+    if not resolved_name:
+        raise HTTPException(status_code=422, detail="Parâmetro 'name' ou 'company_name' é obrigatório.")
+    resolved_location = location or location_hint
+    resolved_deep_scrape = deep_scrape if deep_scrape is not None else (deep_scrape_website if deep_scrape_website is not None else True)
     payload = QuickEnrichRequest(
-        name=name,
-        location=location,
-        deep_scrape=deep_scrape,
+        name=resolved_name,
+        location=resolved_location,
+        deep_scrape=resolved_deep_scrape,
         people=people,
         emails=emails,
         phones=phones,
@@ -94,10 +102,14 @@ def enrich_company_post(payload: CompanyEnrichmentRequest):
 
 @router.get("/company", response_model=CompanyEnrichmentResponse)
 def enrich_company_get(
-    name: str = Query(..., min_length=1, max_length=200, description="Nome da empresa a enriquecer"),
+    name: Optional[str] = Query(None, min_length=1, max_length=200, description="Nome da empresa a enriquecer"),
+    company_name: Optional[str] = Query(None, min_length=1, max_length=200, description="Alias para name"),
     location: Optional[str] = Query(None, description="Dica de localização (cidade ou estado)"),
+    location_hint: Optional[str] = Query(None, description="Alias para location"),
     segment: Optional[str] = Query(None, description="Dica de segmento de atuação"),
-    deep_scrape: bool = Query(True, description="Baixar conteúdo da página oficial identificada"),
+    segment_hint: Optional[str] = Query(None, description="Alias para segment"),
+    deep_scrape: Optional[bool] = Query(None, description="Baixar conteúdo da página oficial identificada"),
+    deep_scrape_website: Optional[bool] = Query(None, description="Alias para deep_scrape"),
     people: Optional[str] = Query(None, description="Pessoas ou executivos separados por vírgula"),
     emails: Optional[str] = Query(None, description="E-mails corporativos separados por vírgula"),
     phones: Optional[str] = Query(None, description="Telefones separados por vírgula"),
@@ -105,11 +117,17 @@ def enrich_company_get(
     """
     Convenience GET endpoint to enrich a company name via query parameters.
     """
+    resolved_name = name or company_name
+    if not resolved_name:
+        raise HTTPException(status_code=422, detail="Parâmetro 'name' ou 'company_name' é obrigatório.")
+    resolved_location = location or location_hint
+    resolved_segment = segment or segment_hint
+    resolved_deep_scrape = deep_scrape if deep_scrape is not None else (deep_scrape_website if deep_scrape_website is not None else True)
     payload = CompanyEnrichmentRequest(
-        company_name=name,
-        location_hint=location,
-        segment_hint=segment,
-        deep_scrape_website=deep_scrape,
+        company_name=resolved_name,
+        location_hint=resolved_location,
+        segment_hint=resolved_segment,
+        deep_scrape_website=resolved_deep_scrape,
         people=people,
         emails=emails,
         phones=phones,
@@ -152,22 +170,34 @@ def find_decision_makers_post(payload: DecisionMakersRequest):
 
 @router.get("/decision-makers", response_model=DecisionMakersResponse)
 def find_decision_makers_get(
-    name: str = Query(..., min_length=1, max_length=200, description="Nome da empresa"),
+    name: Optional[str] = Query(None, min_length=1, max_length=200, description="Nome da empresa"),
+    company_name: Optional[str] = Query(None, min_length=1, max_length=200, description="Alias para name"),
     domain: Optional[str] = Query(None, description="Domínio oficial da empresa (ex: matera.com)"),
+    website_or_domain: Optional[str] = Query(None, description="Alias para domain"),
     people: Optional[str] = Query(None, description="Nomes específicos de pessoas a pesquisar prioritariamente separados por vírgula"),
+    target_people: Optional[str] = Query(None, description="Alias para people"),
     emails: Optional[str] = Query(None, description="E-mails corporativos conhecidos separados por vírgula"),
+    provided_emails: Optional[str] = Query(None, description="Alias para emails"),
     phones: Optional[str] = Query(None, description="Telefones conhecidos separados por vírgula"),
+    provided_phones: Optional[str] = Query(None, description="Alias para phones"),
     max_results: int = Query(10, ge=1, le=25, description="Quantidade máxima de perfis a retornar"),
 ):
     """
     Convenience GET endpoint to discover decision makers via query string.
     """
-    target_peop = [p.strip() for p in people.split(",") if p.strip()] if people else []
-    prov_emails = [e.strip() for e in emails.split(",") if e.strip()] if emails else []
-    prov_phones = [ph.strip() for ph in phones.split(",") if ph.strip()] if phones else []
+    resolved_name = name or company_name
+    if not resolved_name:
+        raise HTTPException(status_code=422, detail="Parâmetro 'name' ou 'company_name' é obrigatório.")
+    resolved_domain = domain or website_or_domain
+    raw_people = people or target_people
+    raw_emails = emails or provided_emails
+    raw_phones = phones or provided_phones
+    target_peop = [p.strip() for p in raw_people.split(",") if p.strip()] if raw_people else []
+    prov_emails = [e.strip() for e in raw_emails.split(",") if e.strip()] if raw_emails else []
+    prov_phones = [ph.strip() for ph in raw_phones.split(",") if ph.strip()] if raw_phones else []
     payload = DecisionMakersRequest(
-        company_name=name,
-        website_or_domain=domain,
+        company_name=resolved_name,
+        website_or_domain=resolved_domain,
         target_people=target_peop,
         provided_emails=prov_emails,
         provided_phones=prov_phones,

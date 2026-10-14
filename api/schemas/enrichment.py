@@ -149,7 +149,7 @@ class CompanyEnrichmentRequest(BaseModel):
         default_factory=list,
         description="Lista de telefones para higienização e validação de WhatsApp",
     )
-    contacts: List[ContactInput] = Field(
+    contacts: Optional[List[ContactInput]] = Field(
         default_factory=list,
         description="Lista estruturada de contatos (nome, email, telefone, cargo)",
     )
@@ -188,8 +188,10 @@ class CompanyEnrichmentRequest(BaseModel):
                     ph_list.extend(_normalize_string_list(data[alt]))
 
             # if contacts list passed, merge into lists
-            contacts_raw = data.get("contacts") or []
-            if isinstance(contacts_raw, list):
+            contacts_raw = data.get("contacts")
+            if not isinstance(contacts_raw, list):
+                data["contacts"] = []
+            else:
                 for c in contacts_raw:
                     if isinstance(c, dict):
                         c_name = c.get("nome") or c.get("name") or c.get("pessoa")
@@ -331,7 +333,7 @@ class DecisionMakersRequest(BaseModel):
         default_factory=list,
         description="Alias para provided_phones",
     )
-    contacts: List[ContactInput] = Field(
+    contacts: Optional[List[ContactInput]] = Field(
         default_factory=list,
         description="Lista de contatos estruturados",
     )
@@ -365,8 +367,10 @@ class DecisionMakersRequest(BaseModel):
                 if alt in data and data[alt]:
                     ph_list.extend(_normalize_string_list(data[alt]))
 
-            contacts_raw = data.get("contacts") or []
-            if isinstance(contacts_raw, list):
+            contacts_raw = data.get("contacts")
+            if not isinstance(contacts_raw, list):
+                data["contacts"] = []
+            else:
                 for c in contacts_raw:
                     if isinstance(c, dict):
                         c_name = c.get("nome") or c.get("name")
@@ -446,7 +450,7 @@ class QuickEnrichRequest(BaseModel):
         default_factory=list,
         description="Lista de telefones para higienização e validação de WhatsApp",
     )
-    contacts: List[ContactInput] = Field(
+    contacts: Optional[List[ContactInput]] = Field(
         default_factory=list,
         description="Lista estruturada de contatos (nome, email, telefone, cargo)",
     )
@@ -485,8 +489,10 @@ class QuickEnrichRequest(BaseModel):
                     ph_list.extend(_normalize_string_list(data[alt]))
 
             # if contacts list passed, merge into lists
-            contacts_raw = data.get("contacts") or []
-            if isinstance(contacts_raw, list):
+            contacts_raw = data.get("contacts")
+            if not isinstance(contacts_raw, list):
+                data["contacts"] = []
+            else:
                 for c in contacts_raw:
                     if isinstance(c, dict):
                         c_name = c.get("nome") or c.get("name") or c.get("pessoa")

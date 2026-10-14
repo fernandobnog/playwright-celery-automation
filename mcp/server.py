@@ -305,29 +305,40 @@ def handle_tools_call(req_id: Any, params: Dict[str, Any]) -> Dict[str, Any]:
             company_name = args.get("name") or args.get("company_name") or args.get("empresa")
             if not company_name:
                 raise ValueError("Parâmetro 'name' é obrigatório.")
-            payload = {
+            payload: Dict[str, Any] = {
                 "name": company_name,
-                "location": args.get("location"),
-                "deep_scrape": args.get("deep_scrape", True),
-                "people": args.get("people"),
-                "emails": args.get("emails"),
-                "phones": args.get("phones"),
-                "contacts": args.get("contacts"),
+                "deep_scrape": bool(args.get("deep_scrape", True)),
             }
+            if args.get("location"):
+                payload["location"] = args["location"]
+            if args.get("people"):
+                payload["people"] = args["people"]
+            if args.get("emails"):
+                payload["emails"] = args["emails"]
+            if args.get("phones"):
+                payload["phones"] = args["phones"]
+            if args.get("contacts"):
+                payload["contacts"] = args["contacts"]
             res = _http_request("/api/v1/enrich", method="POST", data=payload, timeout=300)
 
         elif tool_name == "find_decision_makers":
             company_name = args.get("company_name") or args.get("name")
             if not company_name:
                 raise ValueError("Parâmetro 'company_name' é obrigatório.")
-            payload = {
+            payload: Dict[str, Any] = {
                 "company_name": company_name,
-                "website_or_domain": args.get("website_or_domain"),
                 "max_results": args.get("max_results", 10),
-                "people": args.get("people") or args.get("target_people"),
-                "emails": args.get("emails") or args.get("provided_emails"),
-                "phones": args.get("phones") or args.get("provided_phones"),
             }
+            if args.get("website_or_domain"):
+                payload["website_or_domain"] = args["website_or_domain"]
+            if args.get("people") or args.get("target_people"):
+                payload["people"] = args.get("people") or args.get("target_people")
+            if args.get("emails") or args.get("provided_emails"):
+                payload["emails"] = args.get("emails") or args.get("provided_emails")
+            if args.get("phones") or args.get("provided_phones"):
+                payload["phones"] = args.get("phones") or args.get("provided_phones")
+            if args.get("contacts"):
+                payload["contacts"] = args["contacts"]
             res = _http_request("/api/v1/enrich/decision-makers", method="POST", data=payload, timeout=300)
 
         elif tool_name == "get_linkedin_company_profile":
